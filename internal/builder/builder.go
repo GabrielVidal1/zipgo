@@ -21,12 +21,23 @@ func IsLocalhost(rootDomain string) bool { return rootDomain == "" }
 // BackofficeHost returns the hostname used for the backoffice in domain mode.
 func BackofficeHost(rootDomain string) string { return "backoffice." + rootDomain }
 
+// VinceHost returns the hostname used for the Vince analytics UI in domain mode.
+func VinceHost(rootDomain string) string { return "analytics." + rootDomain }
+
 // LocalhostStartPort is the base port for sites in localhost mode.
 // Port 9000 is always the root/landing site; real sites start at 9001.
 const LocalhostStartPort = 9000
 
 // BackofficeLocalhostPort is the backoffice port in localhost mode.
 const BackofficeLocalhostPort = LocalhostStartPort - 1
+
+// vinceInternalAddr is the loopback address where the Vince sidecar listens.
+// This is fixed and shared between main.go (subprocess) and builder (proxy config).
+const vinceInternalAddr = "127.0.0.1:8899"
+
+// vinceLocalhostProxyPort is the localhost port Caddy listens on in localhost
+// mode and proxies to the internal Vince address.
+const vinceLocalhostProxyPort = 8898
 
 // landingDir is where the auto-generated landing page is written.
 const landingDir = "/tmp/zipgo-landing"
@@ -109,19 +120,13 @@ func domainRoutes(rootDomain string, discovered []sites.Site, backofficeAddr str
 	allowedRanges := allowedBackofficeRanges()
 
 	if len(allowedRanges) > 0 {
-		// Build two routes for the backoffice host:
-		//   1. Deny (403) if the remote IP is NOT in the allow-list.
-		//   2. Proxy through to the internal server for allowed IPs.
-		//
-		// Caddy's remote_ip matcher matches the listed ranges, so we negate it
-		// with "not" to catch everything outside those ranges.
 		allowJSON, _ := json.Marshal(allowedRanges)
 
-		// Route 1 — block non-allowed IPs
+		// Block non-allowed IPs for the backoffice host.
 		parts = append(parts, fmt.Sprintf(`{
-							"match": [
-								{
-									"host": [%s],
+			"match": [
+				{
+					"host": [%s],
 					"not": [{"remote_ip": {"ranges": %s}}]
 				}
 			],
@@ -129,20 +134,28 @@ func domainRoutes(rootDomain string, discovered []sites.Site, backofficeAddr str
 			"terminal": true
 		}`, boHost, allowJSON))
 
-		// Route 2 — proxy allowed IPs
+		// Proxy allowed IPs to the backoffice.
 		parts = append(parts, fmt.Sprintf(`{
 			"match": [{"host": [%s]}],
 			"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
 			"terminal": true
 		}`, boHost, boAddr))
 	} else {
-		// No IP restriction — proxy all traffic to the backoffice.
 		parts = append(parts, fmt.Sprintf(`{
 			"match": [{"host": [%s]}],
 			"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
 			"terminal": true
 		}`, boHost, boAddr))
 	}
+
+	// Vince analytics route — proxy analytics.<rootDomain> to the sidecar.
+	vinceHost, _ := json.Marshal(VinceHost(rootDomain))
+	vinceAddr, _ := json.Marshal(vinceInternalAddr)
+	parts = append(parts, fmt.Sprintf(`{
+		"match": [{"host": [%s]}],
+		"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
+		"terminal": true
+	}`, vinceHost, vinceAddr))
 
 	for _, s := range discovered {
 		r, err := domainRouteJSON(s, rootDomain)
@@ -174,6 +187,8 @@ func domainRouteJSON(s sites.Site, rootDomain string) (string, error) {
 // BuildLocalhostConfig serves each site on its own port.
 // Port 9000 is always root (real or generated landing page).
 // Real sites start at 9001.
+// Port 8999 is the backoffice.
+// Port 8898 proxies to the Vince sidecar on 8899.
 func BuildLocalhostConfig(discovered []sites.Site, backofficeAddr string) (*caddy.Config, error) {
 	discovered = injectLanding(discovered, func(name string) string {
 		for i, s := range discovered {
@@ -186,14 +201,21 @@ func BuildLocalhostConfig(discovered []sites.Site, backofficeAddr string) (*cadd
 
 	var serverEntries []string
 
-	// Backoffice server
+	// Backoffice server.
 	boAddr, _ := json.Marshal(backofficeAddr)
 	serverEntries = append(serverEntries, fmt.Sprintf(`"backoffice": {
 		"listen": ["127.0.0.1:%d"],
 		"routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}]}]
 	}`, BackofficeLocalhostPort, boAddr))
 
-	// discovered[0] is always root (port 9000), rest are 9001+
+	// Vince analytics proxy server.
+	vinceAddr, _ := json.Marshal(vinceInternalAddr)
+	serverEntries = append(serverEntries, fmt.Sprintf(`"vince": {
+		"listen": ["127.0.0.1:%d"],
+		"routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}]}]
+	}`, vinceLocalhostProxyPort, vinceAddr))
+
+	// discovered[0] is always root (port 9000), rest are 9001+.
 	for i, s := range discovered {
 		port := LocalhostStartPort + i
 		absPath, err := filepath.Abs(s.Path)
@@ -227,9 +249,6 @@ func BuildLocalhostConfig(discovered []sites.Site, backofficeAddr string) (*cadd
 
 // ---- landing injection -----------------------------------------------------
 
-// injectLanding prepends a generated landing site at index 0 (port 9000) when
-// no "root" site exists. urlFor must resolve names from the original slice
-// (before injection) since the landing page links to the other sites.
 func injectLanding(discovered []sites.Site, urlFor func(string) string) []sites.Site {
 	if HasRootSite(discovered) {
 		return discovered
@@ -255,15 +274,6 @@ func HasRootSite(discovered []sites.Site) bool {
 
 // ---- shared file-serving handler JSON --------------------------------------
 
-// securityHeadersHandler returns a Caddy headers handler JSON snippet that
-// sets defensive HTTP response headers for all static file responses:
-//
-//   - X-Content-Type-Options: nosniff       — prevents MIME-type sniffing
-//   - X-Frame-Options: SAMEORIGIN           — blocks clickjacking via iframes
-//   - Referrer-Policy: strict-origin-when-cross-origin — limits referrer leakage
-//   - X-XSS-Protection: 0                  — disables legacy IE XSS filter
-//     (modern browsers use CSP; the old filter can introduce vulnerabilities)
-//   - Permissions-Policy                    — opts out of sensitive browser APIs
 func securityHeadersHandler() string {
 	return `{
 		"handler": "headers",

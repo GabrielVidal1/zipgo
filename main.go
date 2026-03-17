@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/caddyserver/caddy/v2"
@@ -53,6 +55,21 @@ func main() {
 
 	backofficeAddr := "127.0.0.1:" + backofficeInternalPort
 
+	// ---- vince analytics sidecar ----
+	// vinceURL is the public-facing URL of the Vince instance, used both to
+	// configure the Caddy reverse-proxy route and to inject the <script> tag
+	// into uploaded HTML files.
+	vinceURL := ""
+	if rootDomain != "" {
+		vinceURL = "https://analytics." + rootDomain
+	} else {
+		vinceURL = "http://localhost:8898"
+	}
+
+	// Start vince as a subprocess unless a service manager already owns it
+	// (VINCE_MANAGED=1, set by the systemd/launchd units from install.sh).
+	vinceCmd := startVinceSidecar(rootDomain, vinceURL)
+
 	// ---- reload: re-discover apps and push new config to Caddy ----
 	reload := func() error {
 		disc, err := sites.Discover(appsDir)
@@ -75,7 +92,6 @@ func main() {
 	urlFor := func(name string) string {
 		disc, _ := sites.Discover(appsDir)
 		if builder.IsLocalhost(rootDomain) {
-			// port 9000 = root, real sites start at 9001
 			for i, s := range disc {
 				if s.Name == name {
 					return fmt.Sprintf("http://localhost:%d", builder.LocalhostStartPort+1+i)
@@ -92,7 +108,7 @@ func main() {
 	}
 
 	// ---- start backoffice HTTP server on loopback ----
-	boHandler := backoffice.Handler(appsDir, boUser, boPass, reload, urlFor)
+	boHandler := backoffice.Handler(appsDir, boUser, boPass, reload, urlFor, vinceURL, rootDomain)
 	boListener, err := net.Listen("tcp", backofficeAddr)
 	if err != nil {
 		log.Fatalf("❌  Could not bind internal port %s: %v\n", backofficeInternalPort, err)
@@ -118,14 +134,11 @@ func main() {
 		fmt.Println("🖥️   Localhost mode (no apps/root.txt found)")
 		fmt.Printf("📁  Sites found : %d\n\n", len(discovered))
 
-		// Port 9000 is always root
 		if hasRoot {
 			fmt.Printf("   [static]  http://localhost:%-5d  →  root\n", builder.LocalhostStartPort)
 		} else {
-			fmt.Printf("   [land ]  http://localhost:%-5d  →  (landing page)\n", builder.LocalhostStartPort)
+			fmt.Printf("   [land ]   http://localhost:%-5d  →  (landing page)\n", builder.LocalhostStartPort)
 		}
-
-		// Real sites start at 9001
 		for i, s := range discovered {
 			if s.Name == "root" {
 				continue
@@ -135,9 +148,13 @@ func main() {
 			if s.IsSPA {
 				kind = "spa"
 			}
-			fmt.Printf("   [%s]  http://localhost:%-5d  →  %s\n", kind, port, s.Name)
+			fmt.Printf("   [%s]   http://localhost:%-5d  →  %s\n", kind, port, s.Name)
 		}
-		fmt.Printf("   [ui  ]  http://localhost:%d    →  backoffice\n\n", builder.BackofficeLocalhostPort)
+		fmt.Printf("   [ui  ]   http://localhost:%d    →  backoffice\n", builder.BackofficeLocalhostPort)
+		if vinceCmd != nil {
+			fmt.Printf("   [anly]   http://localhost:8898    →  analytics (vince)\n")
+		}
+		fmt.Println()
 
 		cfg, err = builder.BuildLocalhostConfig(discovered, backofficeAddr)
 	} else {
@@ -154,7 +171,11 @@ func main() {
 			}
 			fmt.Printf("   [%s]  https://%s\n", kind, s.Host(rootDomain))
 		}
-		fmt.Printf("   [ui  ]  https://%s  (backoffice)\n\n", builder.BackofficeHost(rootDomain))
+		fmt.Printf("   [ui  ]  https://%s  (backoffice)\n", builder.BackofficeHost(rootDomain))
+		if vinceCmd != nil {
+			fmt.Printf("   [anly]  https://%s  (analytics)\n", builder.VinceHost(rootDomain))
+		}
+		fmt.Println()
 
 		cfg, err = builder.BuildConfig(rootDomain, discovered, backofficeAddr)
 	}
@@ -181,6 +202,50 @@ func main() {
 	fmt.Println("\n🛑  Shutting down...")
 	boServer.Shutdown(context.Background())
 	caddy.Stop()
+	if vinceCmd != nil {
+		vinceCmd.Process.Signal(os.Interrupt)
+		vinceCmd.Wait()
+	}
+}
+
+// startVinceSidecar launches the vince binary as a background subprocess if:
+//   - the vince binary exists in the same directory as the zipgo executable, AND
+//   - VINCE_MANAGED is not set to "1" (which install.sh sets on the service
+//     unit so vince isn't double-started when a system manager owns it).
+//
+// It passes --url so Vince knows its own public address for link generation.
+// Returns the running *exec.Cmd, or nil if Vince was not started.
+func startVinceSidecar(rootDomain, vinceURL string) *exec.Cmd {
+	// Service manager already owns vince — don't double-start.
+	// if os.Getenv("VINCE_MANAGED") == "1" {
+	// 	return nil
+	// }
+
+	self, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	vinceExe := filepath.Join(filepath.Dir(self), "vince")
+	if _, err := os.Stat(vinceExe); os.IsNotExist(err) {
+		return nil // vince binary not present — skip silently
+	}
+
+	vinceData := filepath.Join(filepath.Dir(self), "vince-data")
+
+	cmd := exec.Command(vinceExe, "serve",
+		"--data", vinceData,
+		"--listen", "127.0.0.1:8899",
+		"--url", vinceURL,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("⚠️  Could not start Vince sidecar: %v\n", err)
+		return nil
+	}
+	fmt.Printf("📊  Vince analytics sidecar started (pid %d)\n", cmd.Process.Pid)
+	return cmd
 }
 
 func envOr(key, fallback string) string {
@@ -197,6 +262,5 @@ func generatePassword(byteLen int) (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	// RawURLEncoding avoids '+', '/', and '=' which are awkward in shell contexts.
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }

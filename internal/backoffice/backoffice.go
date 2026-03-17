@@ -21,20 +21,34 @@ import (
 )
 
 // Handler returns an http.Handler for the backoffice UI.
-// appsDir is the path to the apps/ directory.
-// username / password protect the UI with Basic Auth.
-// onReload is called after a site is uploaded or deleted so the caller
-// can trigger a Caddy config reload.
-// urlFor returns the public URL for a given site name.
-func Handler(appsDir, username, password string, onReload func() error, urlFor func(string) string) http.Handler {
+//
+//   - appsDir      path to the apps/ directory
+//   - username     Basic Auth username
+//   - password     Basic Auth password
+//   - onReload     called after upload/delete to trigger a Caddy config reload
+//   - urlFor       returns the public URL for a given site name
+//   - vinceURL     public base URL of the Vince analytics instance
+//     (e.g. "https://analytics.example.com" or "http://localhost:8898").
+//     Pass an empty string to disable script injection.
+//   - rootDomain   apex domain (empty in localhost mode); used to derive the
+//     per-site data-domain attribute injected into uploaded HTML files.
+func Handler(
+	appsDir, username, password string,
+	onReload func() error,
+	urlFor func(string) string,
+	vinceURL string,
+	rootDomain string,
+) http.Handler {
 	mux := http.NewServeMux()
 
 	bo := &backoffice{
-		appsDir:  appsDir,
-		username: username,
-		password: password,
-		onReload: onReload,
-		urlFor:   urlFor,
+		appsDir:    appsDir,
+		username:   username,
+		password:   password,
+		onReload:   onReload,
+		urlFor:     urlFor,
+		vinceURL:   vinceURL,
+		rootDomain: rootDomain,
 	}
 
 	mux.HandleFunc("/", bo.auth(bo.handleIndex))
@@ -45,11 +59,13 @@ func Handler(appsDir, username, password string, onReload func() error, urlFor f
 }
 
 type backoffice struct {
-	appsDir  string
-	username string
-	password string
-	onReload func() error
-	urlFor   func(string) string // returns public URL for a site name, "" if unknown
+	appsDir    string
+	username   string
+	password   string
+	onReload   func() error
+	urlFor     func(string) string
+	vinceURL   string // public Vince base URL; empty = injection disabled
+	rootDomain string // apex domain ("" in localhost mode)
 }
 
 // ---------- auth middleware ----------
@@ -171,6 +187,12 @@ func (bo *backoffice) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ---- inject Vince analytics tracking script into all HTML files ----
+	if bo.vinceURL != "" {
+		domain := bo.siteDataDomain(siteName)
+		injectVinceScript(destDir, domain, bo.vinceURL)
+	}
+
 	if bo.onReload != nil {
 		if err := bo.onReload(); err != nil {
 			bo.redirectFlash(w, r, fmt.Sprintf("Site uploaded but reload failed: %v", err), true)
@@ -214,6 +236,82 @@ func (bo *backoffice) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bo.redirectFlash(w, r, fmt.Sprintf("🗑️  Site \"%s\" deleted", siteName), false)
+}
+
+// ---------- Vince script injection ------------------------------------------
+
+// siteDataDomain returns the value to use as the Vince data-domain attribute
+// for the given site name.
+//
+//   - domain mode  : siteName.rootDomain  (e.g. "blog.example.com")
+//                    "root" maps to the apex: "example.com"
+//   - localhost mode: siteName  (best-effort; Vince must have this site registered)
+func (bo *backoffice) siteDataDomain(siteName string) string {
+	if bo.rootDomain == "" {
+		return siteName
+	}
+	if siteName == "root" {
+		return bo.rootDomain
+	}
+	return siteName + "." + bo.rootDomain
+}
+
+// injectVinceScript walks destDir and injects the Vince tracking <script> tag
+// into the <head> of every .html / .htm file.  It is idempotent: files that
+// already contain a snippet for the same domain are skipped.
+func injectVinceScript(destDir, domain, vinceURL string) {
+	snippet := fmt.Sprintf(
+		`<script defer data-domain="%s" src="%s/js/script.js"></script>`,
+		domain, vinceURL,
+	)
+	marker := `data-domain="` + domain + `"`
+
+	_ = filepath.Walk(destDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		lower := strings.ToLower(info.Name())
+		if !strings.HasSuffix(lower, ".html") && !strings.HasSuffix(lower, ".htm") {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		// Idempotency check — don't inject twice.
+		if bytes.Contains(data, []byte(marker)) {
+			return nil
+		}
+
+		// Try to inject before </head>, then before </body>, then just append.
+		injected := injectBeforeTag(data, "</head>", snippet)
+		if injected == nil {
+			injected = injectBeforeTag(data, "</body>", snippet)
+		}
+		if injected == nil {
+			injected = append(data, []byte("\n"+snippet+"\n")...)
+		}
+
+		_ = os.WriteFile(path, injected, info.Mode())
+		return nil
+	})
+}
+
+// injectBeforeTag inserts snippet on its own line immediately before the first
+// occurrence of tag (case-insensitive).  Returns nil if tag is not found.
+func injectBeforeTag(data []byte, tag, snippet string) []byte {
+	lower := bytes.ToLower(data)
+	idx := bytes.Index(lower, []byte(strings.ToLower(tag)))
+	if idx < 0 {
+		return nil
+	}
+	out := make([]byte, 0, len(data)+len(snippet)+2)
+	out = append(out, data[:idx]...)
+	out = append(out, []byte("\n"+snippet+"\n")...)
+	out = append(out, data[idx:]...)
+	return out
 }
 
 // ---------- helpers ----------
@@ -272,11 +370,9 @@ func extractZip(data []byte, destDir string) error {
 		return err
 	}
 
-	// Detect single top-level directory to strip
 	prefix := detectZipPrefix(r.File)
 
 	for _, f := range r.File {
-		// Strip prefix
 		relPath := strings.TrimPrefix(f.Name, prefix)
 		if relPath == "" || strings.HasPrefix(relPath, "..") {
 			continue
@@ -284,7 +380,7 @@ func extractZip(data []byte, destDir string) error {
 
 		dest := filepath.Join(destDir, filepath.FromSlash(relPath))
 
-		// Guard against zip-slip
+		// Guard against zip-slip.
 		absDir, _ := filepath.Abs(destDir)
 		absDest, _ := filepath.Abs(dest)
 		if !strings.HasPrefix(absDest, absDir+string(filepath.Separator)) && absDest != absDir {
