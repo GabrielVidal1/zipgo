@@ -1,14 +1,14 @@
 #!/usr/bin/env sh
 set -e
 
-REPO="gabrielvidal/sitehost"
+REPO="GabrielVidal1/sitehost"
 BINARY="sitehost"
 INSTALL_DIR="${PWD}"
 
 # ── colours ────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
-  BOLD="\033[1m"; RESET="\033[0m"
-  GREEN="\033[32m"; CYAN="\033[36m"; YELLOW="\033[33m"; RED="\033[31m"; GREY="\033[90m"
+  BOLD=$'\033[1m';  RESET=$'\033[0m'
+  GREEN=$'\033[32m'; CYAN=$'\033[36m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; GREY=$'\033[90m'
 else
   BOLD=""; RESET=""; GREEN=""; CYAN=""; YELLOW=""; RED=""; GREY=""
 fi
@@ -20,8 +20,9 @@ fatal()   { printf "${RED}  err ${RESET}%s\n" "$*" >&2; exit 1; }
 
 # ── banner ─────────────────────────────────────────────────────────────────
 printf "\n"
-printf "${BOLD}  sitehost installer${RESET}\n"
-printf "${GREY}  one binary, many sites${RESET}\n\n"
+printf "%s\n" "  ${BOLD}sitehost installer${RESET}"
+printf "%s\n" "  ${GREY}one binary, many sites${RESET}"
+printf "\n"
 
 # ── detect OS / arch ───────────────────────────────────────────────────────
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -64,7 +65,8 @@ ASSET="sitehost-${GOOS}-${GOARCH}${EXT}"
 URL="https://github.com/${REPO}/releases/download/${LATEST}/${ASSET}"
 
 # ── confirm install location ───────────────────────────────────────────────
-printf "\n  Install sitehost into: ${BOLD}${INSTALL_DIR}${RESET}\n"
+printf "\n"
+printf "%s\n" "  Install sitehost into: ${BOLD}${INSTALL_DIR}${RESET}"
 printf "  Continue? [Y/n] "
 read -r CONFIRM </dev/tty
 case "$CONFIRM" in
@@ -101,12 +103,19 @@ else
 fi
 
 # ── done ───────────────────────────────────────────────────────────────────
-printf "\n${GREEN}${BOLD}  sitehost ${LATEST} is ready!${RESET}\n\n"
-printf "  Next steps:\n\n"
-printf "  ${CYAN}1.${RESET}  Edit apps/root.txt with your domain\n"
-printf "      ${GREY}(leave empty for localhost mode)${RESET}\n\n"
-printf "  ${CYAN}2.${RESET}  Set a password:\n"
-printf "      ${BOLD}export SITEHOST_PASS=yourpassword${RESET}\n\n"
-printf "  ${CYAN}3.${RESET}  Run:\n"
-printf "      ${BOLD}./${BINARY}${EXT} ${INSTALL_DIR}/apps${RESET}\n\n"
-printf "  ${GREY}Backoffice -> http://localhost:8999${RESET}\n\n"
+printf "\n"
+printf "%s\n" "  ${GREEN}${BOLD}sitehost ${LATEST} is ready!${RESET}"
+printf "\n"
+printf "%s\n" "  Next steps:"
+printf "\n"
+printf "%s\n" "  ${CYAN}1.${RESET}  Edit apps/root.txt with your domain"
+printf "%s\n" "      ${GREY}(leave empty for localhost mode)${RESET}"
+printf "\n"
+printf "%s\n" "  ${CYAN}2.${RESET}  Set a password:"
+printf "%s\n" "      ${BOLD}export SITEHOST_PASS=yourpassword${RESET}"
+printf "\n"
+printf "%s\n" "  ${CYAN}3.${RESET}  Run:"
+printf "%s\n" "      ${BOLD}./${BINARY}${EXT} ${INSTALL_DIR}/apps${RESET}"
+printf "\n"
+printf "%s\n" "  ${GREY}Backoffice -> http://localhost:8999${RESET}"
+printf "\n"
