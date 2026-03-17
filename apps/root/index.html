@@ -1150,7 +1150,9 @@
               ># detects your OS &amp; arch, asks before writing anything</span
             ><br />
             <span class="c-cmd">curl</span> -fsSL
-            https://raw.githubusercontent.com/GabrielVidal1/zipgo/refs/heads/main/install.sh
+            <span id="install-script-url"
+              >https://install.zipgo.xyz/linux.sh</span
+            >
             | sh
           </div>
           <p class="install-note">
@@ -1342,6 +1344,15 @@
             : goos === "windows"
               ? "Windows"
               : "Linux";
+
+        const installScriptOS =
+          goos === "darwin"
+            ? "macos"
+            : goos === "windows"
+              ? "windows"
+              : "linux";
+        document.getElementById("install-script-url").textContent =
+          "https://install.zipgo.xyz/" + installScriptOS + ".sh";
 
         document.getElementById("download-label").textContent =
           "Download for " + osName + " (" + goarch + ")";

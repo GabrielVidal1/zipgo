@@ -8,7 +8,10 @@ APPS_DIR := $(abspath apps)
 format:
 	gofmt -w .
 
-build:
+build-install-scripts:
+	bash scripts/populate_script.sh apps/install
+
+build: build-install-scripts
 	go mod tidy
 	CGO_ENABLED=0 go build -o $(BINARY) .
 	@if [ "$$(uname)" = "Darwin" ]; then codesign --force --sign - $(BINARY); fi
