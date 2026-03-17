@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 set -e
 
-REPO="GabrielVidal1/sitehost"
-BINARY="sitehost"
+REPO="GabrielVidal1/zipgo"
+BINARY="zipgo"
 INSTALL_DIR="${PWD}"
 
 # ── colours ────────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ fatal()   { printf "${RED}  err ${RESET}%s\n" "$*" >&2; exit 1; }
 
 # ── banner ─────────────────────────────────────────────────────────────────
 printf "\n"
-printf "%s\n" "  ${BOLD}sitehost installer${RESET}"
+printf "%s\n" "  ${BOLD}zipgo installer${RESET}"
 printf "%s\n" "  ${GREY}one binary, many sites${RESET}"
 printf "\n"
 
@@ -61,12 +61,12 @@ info "Latest: ${BOLD}${LATEST}${RESET}"
 # ── build download URL ─────────────────────────────────────────────────────
 EXT=""
 [ "$GOOS" = "windows" ] && EXT=".exe"
-ASSET="sitehost-${GOOS}-${GOARCH}${EXT}"
+ASSET="zipgo-${GOOS}-${GOARCH}${EXT}"
 URL="https://github.com/${REPO}/releases/download/${LATEST}/${ASSET}"
 
 # ── confirm install location ───────────────────────────────────────────────
 printf "\n"
-printf "%s\n" "  Install sitehost into: ${BOLD}${INSTALL_DIR}${RESET}"
+printf "%s\n" "  Install zipgo into: ${BOLD}${INSTALL_DIR}${RESET}"
 printf "  Continue? [Y/n] "
 read -r CONFIRM </dev/tty
 case "$CONFIRM" in
@@ -104,7 +104,7 @@ fi
 
 # ── done ───────────────────────────────────────────────────────────────────
 printf "\n"
-printf "%s\n" "  ${GREEN}${BOLD}sitehost ${LATEST} is ready!${RESET}"
+printf "%s\n" "  ${GREEN}${BOLD}zipgo ${LATEST} is ready!${RESET}"
 printf "\n"
 printf "%s\n" "  Next steps:"
 printf "\n"
@@ -112,7 +112,7 @@ printf "%s\n" "  ${CYAN}1.${RESET}  Edit apps/root.txt with your domain"
 printf "%s\n" "      ${GREY}(leave empty for localhost mode)${RESET}"
 printf "\n"
 printf "%s\n" "  ${CYAN}2.${RESET}  Set a password:"
-printf "%s\n" "      ${BOLD}export SITEHOST_PASS=yourpassword${RESET}"
+printf "%s\n" "      ${BOLD}export ZIPGO_PASS=yourpassword${RESET}"
 printf "\n"
 printf "%s\n" "  ${CYAN}3.${RESET}  Run:"
 printf "%s\n" "      ${BOLD}./${BINARY}${EXT} ${INSTALL_DIR}/apps${RESET}"

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>sitehost — one binary, many sites</title>
+    <title>zipgo — one binary, many sites</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -764,13 +764,13 @@
   <body>
     <!-- NAV -->
     <nav>
-      <a class="nav-logo" href="#">🌐 sitehost</a>
+      <a class="nav-logo" href="#">🌐 zipgo</a>
       <div class="nav-right">
         <div class="nav-desktop">
           <a href="#how">How it works</a>
           <a href="#install">Install</a>
           <a
-            href="https://github.com/GabrielVidal1/sitehost"
+            href="https://github.com/GabrielVidal1/zipgo"
             target="_blank"
             rel="noopener"
             >GitHub</a
@@ -806,7 +806,7 @@
       <a href="#how" onclick="closeDrawer()">How it works</a>
       <a href="#install" onclick="closeDrawer()">Install</a>
       <a
-        href="https://github.com/GabrielVidal1/sitehost"
+        href="https://github.com/GabrielVidal1/zipgo"
         target="_blank"
         rel="noopener"
         onclick="closeDrawer()"
@@ -821,9 +821,9 @@
         <div class="eyebrow">One binary. Zero config.</div>
         <h1 class="hero-left-title">Host anything,<br /><em>instantly.</em></h1>
         <p class="hero-sub">
-          Drop a ZIP, get a live site. sitehost is a single Go binary that
-          serves static sites and SPAs with automatic HTTPS — no containers, no
-          YAML, no ops.
+          Drop a ZIP, get a live site. zipgo is a single Go binary that serves
+          static sites and SPAs with automatic HTTPS — no containers, no YAML,
+          no ops.
         </p>
         <div class="hero-actions">
           <a href="#" class="btn-primary" id="download-btn">
@@ -831,7 +831,7 @@
             <span id="download-label">Download</span>
           </a>
           <a
-            href="https://github.com/GabrielVidal1/sitehost"
+            href="https://github.com/GabrielVidal1/zipgo"
             target="_blank"
             rel="noopener"
             class="btn-ghost"
@@ -903,7 +903,7 @@
           <h3>Configure</h3>
           <p>
             Put your domain in <code>apps/root.txt</code> — or leave it empty
-            for localhost mode. Set <code>SITEHOST_PASS</code>. That's it.
+            for localhost mode. Set <code>ZIPGO_PASS</code>. That's it.
           </p>
         </div>
         <div class="step">
@@ -942,7 +942,7 @@
 
     <!-- FEATURES -->
     <section class="features">
-      <div class="section-label">Why sitehost</div>
+      <div class="section-label">Why zipgo</div>
       <div class="features-grid">
         <div class="feature">
           <div class="feature-icon">
@@ -1028,7 +1028,7 @@
               >Caddy</a
             >. No telemetry, no accounts, no lock-in.
             <a
-              href="https://github.com/GabrielVidal1/sitehost"
+              href="https://github.com/GabrielVidal1/zipgo"
               target="_blank"
               rel="noopener"
               >Fork it freely.</a
@@ -1063,7 +1063,7 @@
               ># detects your OS &amp; arch, asks before writing anything</span
             ><br />
             <span class="c-cmd">curl</span> -fsSL
-            https://raw.githubusercontent.com/GabrielVidal1/sitehost/refs/heads/main/install.sh
+            https://raw.githubusercontent.com/GabrielVidal1/zipgo/refs/heads/main/install.sh
             | sh
           </div>
           <p class="install-note">
@@ -1076,13 +1076,13 @@
           <div class="code-block">
             <span class="c-dim"># replace linux-amd64 with your platform</span
             ><br />
-            <span class="c-cmd">curl</span> -Lo sitehost \<br />
+            <span class="c-cmd">curl</span> -Lo zipgo \<br />
             &nbsp;
-            https://github.com/GabrielVidal1/sitehost/releases/latest/download/sitehost-<span
+            https://github.com/GabrielVidal1/zipgo/releases/latest/download/zipgo-<span
               class="c-go"
               >linux-amd64</span
             ><br /><br />
-            <span class="c-cmd">chmod</span> +x sitehost<br />
+            <span class="c-cmd">chmod</span> +x zipgo<br />
             <span class="c-cmd">mkdir</span> -p apps &amp;&amp; touch
             apps/root.txt
           </div>
@@ -1097,11 +1097,11 @@
           <div class="code-block">
             <span class="c-dim"># requires Go 1.21+</span><br />
             <span class="c-cmd">git</span> clone
-            https://github.com/GabrielVidal1/sitehost<br />
-            <span class="c-cmd">cd</span> sitehost &amp;&amp;
+            https://github.com/GabrielVidal1/zipgo<br />
+            <span class="c-cmd">cd</span> zipgo &amp;&amp;
             <span class="c-cmd">make</span> build<br /><br />
             <span class="c-dim"># run locally (no domain needed)</span><br />
-            <span class="c-go">SITEHOST_PASS</span>=dev
+            <span class="c-go">ZIPGO_PASS</span>=dev
             <span class="c-cmd">make</span> run-local
           </div>
           <p class="install-note">
@@ -1113,7 +1113,7 @@
 
     <!-- FOOTER -->
     <footer>
-      <div class="footer-logo">🌐 sitehost</div>
+      <div class="footer-logo">🌐 zipgo</div>
       <div class="footer-mid">
         made with 🩷 by
         <a
@@ -1125,14 +1125,14 @@
       </div>
       <div class="footer-links">
         <a
-          href="https://github.com/GabrielVidal1/sitehost"
+          href="https://github.com/GabrielVidal1/zipgo"
           target="_blank"
           rel="noopener"
         >
           <i data-lucide="github" style="width: 13px; height: 13px"></i> GitHub
         </a>
         <a
-          href="https://github.com/GabrielVidal1/sitehost/blob/main/LICENSE"
+          href="https://github.com/GabrielVidal1/zipgo/blob/main/LICENSE"
           target="_blank"
           rel="noopener"
         >
@@ -1204,7 +1204,7 @@
 
       /* ── OS detection → download button ────────────────────── */
       (function () {
-        const REPO = "GabrielVidal1/sitehost";
+        const REPO = "GabrielVidal1/zipgo";
         const ua = (navigator.userAgent || "").toLowerCase();
         const plat = (navigator.platform || "").toLowerCase();
         let goos,
@@ -1239,7 +1239,7 @@
           } catch (_) {}
         }
 
-        const asset = "sitehost-" + goos + "-" + goarch + ext;
+        const asset = "zipgo-" + goos + "-" + goarch + ext;
         const osName =
           goos === "darwin"
             ? "macOS"

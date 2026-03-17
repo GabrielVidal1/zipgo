@@ -1,8 +1,8 @@
 # Landing page
 
-When no `root` site is deployed, sitehost automatically generates a landing page that links to all hosted sites.
+When no `root` site is deployed, zipgo automatically generates a landing page that links to all hosted sites.
 
-![sitehost landing page](./landing.png)
+![zipgo landing page](./landing.png)
 
 ## When it appears
 
@@ -21,7 +21,7 @@ Clicking a card navigates directly to that site.
 
 ## Customising how your site appears
 
-The landing page reads standard HTML meta tags — no sitehost-specific config needed. To control how your site is listed, set these tags in your `index.html`:
+The landing page reads standard HTML meta tags — no zipgo-specific config needed. To control how your site is listed, set these tags in your `index.html`:
 
 ```html
 <title>My App</title>
@@ -45,4 +45,4 @@ apps/
     └── index.html   ← served at the apex domain / port 9000
 ```
 
-The generated landing page is written to `/tmp/sitehost-landing/` and is recreated on every reload, so it always reflects the current set of deployed sites.
+The generated landing page is written to `/tmp/zipgo-landing/` and is recreated on every reload, so it always reflects the current set of deployed sites.

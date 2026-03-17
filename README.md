@@ -1,9 +1,9 @@
-# sitehost
+# zipgo
 
-![GitHub release](https://img.shields.io/github/v/release/GabrielVidal1/sitehost)
-![Go version](https://img.shields.io/github/go-mod/go-version/GabrielVidal1/sitehost)
-![Build](https://img.shields.io/github/actions/workflow/status/GabrielVidal1/sitehost/release.yml)
-![License](https://img.shields.io/github/license/GabrielVidal1/sitehost)
+![GitHub release](https://img.shields.io/github/v/release/GabrielVidal1/zipgo)
+![Go version](https://img.shields.io/github/go-mod/go-version/GabrielVidal1/zipgo)
+![Build](https://img.shields.io/github/actions/workflow/status/GabrielVidal1/zipgo/release.yml)
+![License](https://img.shields.io/github/license/GabrielVidal1/zipgo)
 ![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS-blue)
 
 A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. Drop a ZIP into a web UI and your site is live — with automatic HTTPS via Let's Encrypt, or on localhost with zero config.
@@ -12,7 +12,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 
 ## Architecture
 
-![sitehost architecture](./docs/architecture.svg)
+![zipgo architecture](./docs/architecture.svg)
 
 ## Features
 
@@ -40,9 +40,9 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 ### Localhost (no domain, no sudo)
 
 ```bash
-git clone https://github.com/GabrielVidal1/sitehost
-cd sitehost
-SITEHOST_PASS=dev make run-local
+git clone https://github.com/GabrielVidal1/zipgo
+cd zipgo
+ZIPGO_PASS=dev make run-local
 ```
 
 | URL                     | What                |
@@ -58,7 +58,7 @@ SITEHOST_PASS=dev make run-local
 echo "yourdomain.com" > apps/root.txt
 
 # 2. Run (needs ports 80/443)
-SITEHOST_PASS=supersecret make run
+ZIPGO_PASS=supersecret make run
 ```
 
 | URL                                 | What                |
@@ -72,7 +72,7 @@ SITEHOST_PASS=supersecret make run
 ## Directory Layout
 
 ```
-sitehost/
+zipgo/
 ├── apps/                  # Your sites live here
 │   ├── root.txt           # (optional) your domain — omit for localhost mode
 │   ├── root/              # Served at the apex domain / port 9000
@@ -156,7 +156,7 @@ make up
 make logs
 ```
 
-Credentials are stored in `/etc/sitehost/env` (mode `600`). Re-running `make install` keeps existing credentials.
+Credentials are stored in `/etc/zipgo/env` (mode `600`). Re-running `make install` keeps existing credentials.
 
 The service runs with `CAP_NET_BIND_SERVICE` so it can bind to ports 80/443 without running as root.
 
@@ -164,10 +164,10 @@ The service runs with `CAP_NET_BIND_SERVICE` so it can bind to ports 80/443 with
 
 ## Environment Variables
 
-| Variable        | Default      | Description         |
-| --------------- | ------------ | ------------------- |
-| `SITEHOST_USER` | `admin`      | Backoffice username |
-| `SITEHOST_PASS` | _(required)_ | Backoffice password |
+| Variable     | Default      | Description         |
+| ------------ | ------------ | ------------------- |
+| `ZIPGO_USER` | `admin`      | Backoffice username |
+| `ZIPGO_PASS` | _(required)_ | Backoffice password |
 
 ---
 

@@ -1,15 +1,15 @@
-BINARY      := sitehost
+BINARY      := zipgo
 INSTALL_DIR := /usr/local/bin
-SERVICE     := sitehost
+SERVICE     := zipgo
 APPS_DIR    := $(abspath apps)
 UNIT_FILE   := /etc/systemd/system/$(SERVICE).service
-ENV_FILE    := /etc/sitehost/env
+ENV_FILE    := /etc/zipgo/env
 
 .PHONY: build install uninstall up down restart status logs run run-local clean help
 
 ## help: show available commands
 help:
-	@printf '\n  \033[1msitehost\033[0m\n\n'
+	@printf '\n  \033[1mzipgo\033[0m\n\n'
 	@printf '  \033[36mmake build\033[0m       compile the binary\n'
 	@printf '  \033[36mmake install\033[0m     build + install binary + systemd service\n'
 	@printf '  \033[36mmake uninstall\033[0m   stop service and remove everything\n\n'
@@ -36,9 +36,9 @@ build:
 
 ## run: run in foreground with a real domain (needs sudo for ports 80/443)
 run: build
-	@if [ -z "$$SITEHOST_PASS" ]; then \
+	@if [ -z "$$ZIPGO_PASS" ]; then \
 		read -s -p "Backoffice password: " pass; echo; \
-		SITEHOST_PASS="$$pass" sudo -E ./$(BINARY) $(APPS_DIR); \
+		ZIPGO_PASS="$$pass" sudo -E ./$(BINARY) $(APPS_DIR); \
 	else \
 		sudo -E ./$(BINARY) $(APPS_DIR); \
 	fi
@@ -48,25 +48,25 @@ run: build
 ##   Backoffice on http://localhost:8999
 ##   No apps/root.txt needed.
 run-local: build
-	SITEHOST_PASS=$${SITEHOST_PASS:-dev} ./$(BINARY) $(APPS_DIR)
+	ZIPGO_PASS=$${ZIPGO_PASS:-dev} ./$(BINARY) $(APPS_DIR)
 
 ## install: build, install binary, create systemd service (prompts for password)
 install: build
 	@echo "→ Installing binary to $(INSTALL_DIR)/$(BINARY)"
 	sudo install -m 755 $(BINARY) $(INSTALL_DIR)/$(BINARY)
 
-	@sudo mkdir -p /etc/sitehost
+	@sudo mkdir -p /etc/zipgo
 	@if sudo test -f $(ENV_FILE); then \
 		echo "→ Keeping existing credentials in $(ENV_FILE)"; \
 	else \
 		read -s -p "Set backoffice password: " pass; echo; \
-		printf 'SITEHOST_USER=admin\nSITEHOST_PASS=%s\n' "$$pass" | sudo tee $(ENV_FILE) > /dev/null; \
+		printf 'ZIPGO_USER=admin\nZIPGO_PASS=%s\n' "$$pass" | sudo tee $(ENV_FILE) > /dev/null; \
 		sudo chmod 600 $(ENV_FILE); \
 		echo "→ Credentials written to $(ENV_FILE)"; \
 	fi
 
 	@echo "→ Writing systemd unit $(UNIT_FILE)"
-	@printf '[Unit]\nDescription=sitehost static site server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nEnvironmentFile=%s\nExecStart=%s/%s %s\nRestart=on-failure\nRestartSec=5s\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nNoNewPrivileges=true\nEnvironment=HOME=/var/lib/%s\n\n[Install]\nWantedBy=multi-user.target\n' \
+	@printf '[Unit]\nDescription=zipgo static site server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nEnvironmentFile=%s\nExecStart=%s/%s %s\nRestart=on-failure\nRestartSec=5s\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nNoNewPrivileges=true\nEnvironment=HOME=/var/lib/%s\n\n[Install]\nWantedBy=multi-user.target\n' \
 		$(ENV_FILE) $(INSTALL_DIR) $(BINARY) $(APPS_DIR) $(SERVICE) \
 		| sudo tee $(UNIT_FILE) > /dev/null
 

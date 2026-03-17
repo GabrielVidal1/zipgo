@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/net/html"
 
-	"sitehost/internal/sites"
+	"zipgo/internal/sites"
 )
 
 // SiteCard holds display info for one site on the landing page.

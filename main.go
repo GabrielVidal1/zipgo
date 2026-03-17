@@ -18,10 +18,10 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls/standardstek"
 
-	"sitehost/internal/backoffice"
-	"sitehost/internal/builder"
-	"sitehost/internal/config"
-	"sitehost/internal/sites"
+	"zipgo/internal/backoffice"
+	"zipgo/internal/builder"
+	"zipgo/internal/config"
+	"zipgo/internal/sites"
 )
 
 const backofficeInternalPort = "9876"
@@ -39,10 +39,10 @@ func main() {
 	}
 
 	// ---- credentials ----
-	boUser := envOr("SITEHOST_USER", "admin")
-	boPass := envOr("SITEHOST_PASS", "")
+	boUser := envOr("ZIPGO_USER", "admin")
+	boPass := envOr("ZIPGO_PASS", "")
 	if boPass == "" {
-		log.Fatal("❌  Set SITEHOST_PASS before starting.\n    Example: export SITEHOST_PASS=changeme")
+		log.Fatal("❌  Set ZIPGO_PASS before starting.\n    Example: export ZIPGO_PASS=changeme")
 	}
 
 	backofficeAddr := "127.0.0.1:" + backofficeInternalPort

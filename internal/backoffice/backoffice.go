@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"sitehost/internal/sites"
+	"zipgo/internal/sites"
 )
 
 // Handler returns an http.Handler for the backoffice UI.
@@ -58,7 +58,7 @@ func (bo *backoffice) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != bo.username || pass != bo.password {
-			w.Header().Set("WWW-Authenticate", `Basic realm="sitehost backoffice"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="zipgo backoffice"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

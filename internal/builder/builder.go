@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/caddyserver/caddy/v2"
-	"sitehost/internal/landing"
-	"sitehost/internal/sites"
+	"zipgo/internal/landing"
+	"zipgo/internal/sites"
 )
 
 // ---- public helpers --------------------------------------------------------
@@ -29,14 +29,14 @@ const LocalhostStartPort = 9000
 const BackofficeLocalhostPort = LocalhostStartPort - 1
 
 // landingDir is where the auto-generated landing page is written.
-const landingDir = "/tmp/sitehost-landing"
+const landingDir = "/tmp/zipgo-landing"
 
 // backofficeAllowedIPsEnv is the env var for comma-separated CIDRs allowed to
 // reach the backoffice. When unset every IP is allowed (backwards-compatible).
-// Example: SITEHOST_BO_ALLOW=203.0.113.42/32,192.168.1.0/24
-const backofficeAllowedIPsEnv = "SITEHOST_BO_ALLOW"
+// Example: ZIPGO_BO_ALLOW=203.0.113.42/32,192.168.1.0/24
+const backofficeAllowedIPsEnv = "ZIPGO_BO_ALLOW"
 
-// allowedBackofficeRanges reads SITEHOST_BO_ALLOW and returns a slice of CIDR
+// allowedBackofficeRanges reads ZIPGO_BO_ALLOW and returns a slice of CIDR
 // strings. Returns nil when the variable is unset or empty (= allow all).
 func allowedBackofficeRanges() []string {
 	raw := strings.TrimSpace(os.Getenv(backofficeAllowedIPsEnv))

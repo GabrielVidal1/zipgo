@@ -1,4 +1,4 @@
-module sitehost
+module zipgo
 
 go 1.25.0
 

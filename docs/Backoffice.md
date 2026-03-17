@@ -2,7 +2,7 @@
 
 The backoffice is a password-protected web UI for deploying and managing sites without touching the filesystem directly.
 
-![sitehost backoffice](./backoffice.png)
+![zipgo backoffice](./backoffice.png)
 
 ## Accessing it
 
@@ -11,7 +11,7 @@ The backoffice is a password-protected web UI for deploying and managing sites w
 | Domain    | `https://backoffice.yourdomain.com` |
 | Localhost | `http://localhost:8999`             |
 
-Your browser will prompt for a username and password (HTTP Basic Auth). The credentials are set via the `SITEHOST_USER` and `SITEHOST_PASS` environment variables — or in `/etc/sitehost/env` if you used `make install`.
+Your browser will prompt for a username and password (HTTP Basic Auth). The credentials are set via the `ZIPGO_USER` and `ZIPGO_PASS` environment variables — or in `/etc/zipgo/env` if you used `make install`.
 
 ## Deploying a site
 

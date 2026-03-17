@@ -36,12 +36,12 @@ jobs:
         run: |
           go mod tidy
           go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
-            -o sitehost-${{ matrix.goos }}-${{ matrix.goarch }} .
+            -o zipgo-${{ matrix.goos }}-${{ matrix.goarch }} .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sitehost-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: sitehost-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: zipgo-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: zipgo-${{ matrix.goos }}-${{ matrix.goarch }}
 
   release:
     needs: build
