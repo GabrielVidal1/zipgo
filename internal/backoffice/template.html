@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sitehost — backoffice</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --bg: #0f172a;
+        --surface: #1e293b;
+        --border: #334155;
+        --accent: #3b82f6;
+        --accent2: #6366f1;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --danger: #ef4444;
+        --success: #22c55e;
+        --radius: 10px;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        font-size: 15px;
+        min-height: 100vh;
+        padding: 2rem 1rem;
+      }
+
+      .container {
+        max-width: 820px;
+        margin: 0 auto;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 2rem;
+      }
+      header h1 {
+        font-size: 1.4rem;
+        font-weight: 700;
+      }
+      header .tag {
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        background: var(--accent2);
+        color: #fff;
+        padding: 2px 8px;
+        border-radius: 99px;
+      }
+
+      .flash {
+        padding: 0.75rem 1rem;
+        border-radius: var(--radius);
+        margin-bottom: 1.5rem;
+        font-size: 0.9rem;
+        font-weight: 500;
+      }
+      .flash.ok {
+        background: #14532d;
+        color: #bbf7d0;
+        border: 1px solid #16a34a;
+      }
+      .flash.err {
+        background: #450a0a;
+        color: #fecaca;
+        border: 1px solid #dc2626;
+      }
+
+      /* ---- upload card ---- */
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 1.5rem;
+        margin-bottom: 1.75rem;
+      }
+      .card h2 {
+        font-size: 1rem;
+        font-weight: 600;
+        margin-bottom: 1rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-size: 0.78rem;
+      }
+
+      .form-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 0.75rem;
+        align-items: end;
+      }
+      @media (max-width: 580px) {
+        .form-row {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      label {
+        display: block;
+        font-size: 0.82rem;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+      }
+
+      input[type="text"],
+      input[type="file"] {
+        width: 100%;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 0.55rem 0.75rem;
+        font-size: 0.92rem;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      input[type="text"]:focus,
+      input[type="file"]:focus {
+        border-color: var(--accent);
+      }
+      input[type="file"] {
+        padding: 0.45rem 0.75rem;
+        cursor: pointer;
+      }
+      input[type="file"]::file-selector-button {
+        background: var(--border);
+        color: var(--text);
+        border: none;
+        border-radius: 4px;
+        padding: 0.3rem 0.7rem;
+        margin-right: 0.75rem;
+        cursor: pointer;
+        font-size: 0.85rem;
+      }
+
+      .hint {
+        font-size: 0.75rem;
+        color: var(--muted);
+        margin-top: 0.35rem;
+      }
+
+      /* ---- buttons ---- */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.58rem 1.1rem;
+        border-radius: 6px;
+        border: none;
+        font-size: 0.88rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          opacity 0.15s,
+          transform 0.1s;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .btn:active {
+        transform: scale(0.97);
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      .btn-ghost {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--border);
+        padding: 0.3rem 0.7rem;
+        font-size: 0.8rem;
+      }
+      .btn-ghost:hover {
+        border-color: var(--accent);
+        background: rgba(59, 130, 246, 0.1);
+      }
+      .btn-danger {
+        background: transparent;
+        color: var(--danger);
+        border: 1px solid var(--danger);
+        padding: 0.3rem 0.7rem;
+        font-size: 0.8rem;
+      }
+      .btn-danger:hover {
+        background: var(--danger);
+        color: #fff;
+      }
+
+      /* ---- upload progress ---- */
+      #progress-wrap {
+        display: none;
+        margin-top: 1rem;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      #progress-bar {
+        height: 6px;
+        width: 0%;
+        background: linear-gradient(90deg, var(--accent), var(--accent2));
+        transition: width 0.2s;
+      }
+      #progress-label {
+        font-size: 0.78rem;
+        color: var(--muted);
+        padding: 0.4rem 0.75rem;
+      }
+
+      /* ---- sites table ---- */
+      .sites-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 0.75rem;
+      }
+      .sites-header h2 {
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .count {
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th {
+        text-align: left;
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+      }
+      td {
+        padding: 0.75rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.88rem;
+        vertical-align: middle;
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      tr:hover td {
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .badge {
+        display: inline-block;
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 2px 7px;
+        border-radius: 99px;
+      }
+      .badge-spa {
+        background: #1e3a5f;
+        color: #93c5fd;
+      }
+      .badge-static {
+        background: #1a2e1a;
+        color: #86efac;
+      }
+
+      .empty {
+        text-align: center;
+        color: var(--muted);
+        padding: 2.5rem 1rem;
+        font-size: 0.9rem;
+      }
+
+      .name-cell {
+        font-weight: 600;
+        font-family: monospace;
+        font-size: 0.9rem;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+      .actions {
+        display: flex;
+        gap: 0.5rem;
+        justify-content: flex-end;
+      }
+
+      footer {
+        margin-top: 2.5rem;
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <span style="font-size: 1.6rem">🌐</span>
+        <h1>sitehost</h1>
+        <span class="tag">backoffice</span>
+      </header>
+
+      {{if .Flash}}
+      <div class="flash {{if .IsError}}err{{else}}ok{{end}}">{{.Flash}}</div>
+      {{end}}
+
+      <!-- Upload card -->
+      <div class="card">
+        <h2>Deploy a site</h2>
+        <form
+          id="upload-form"
+          method="POST"
+          action="/upload"
+          enctype="multipart/form-data"
+        >
+          <div class="form-row">
+            <div>
+              <label for="name"
+                >Site name
+                <span style="color: var(--muted)">(= subdomain)</span></label
+              >
+              <input
+                type="text"
+                id="name"
+                name="name"
+                placeholder="myblog"
+                pattern="[a-zA-Z0-9\-_]+"
+                required
+                autocomplete="off"
+              />
+              <p class="hint">
+                Use <code>root</code> to serve the apex domain.
+              </p>
+            </div>
+            <div>
+              <label for="zipfile">ZIP or HTML file</label>
+              <input
+                type="file"
+                id="zipfile"
+                name="zipfile"
+                accept=".zip,.html,.htm"
+                required
+              />
+              <p class="hint">
+                Upload your build output as a ZIP, or a single HTML file (saved
+                as index.html).
+              </p>
+            </div>
+            <div>
+              <button type="submit" class="btn btn-primary">⬆ Deploy</button>
+            </div>
+          </div>
+          <div id="progress-wrap">
+            <div id="progress-bar"></div>
+            <div id="progress-label">Uploading…</div>
+          </div>
+        </form>
+      </div>
+
+      <!-- Sites list -->
+      <div class="card">
+        <div class="sites-header">
+          <h2>Live sites</h2>
+          <span class="count">{{len .Sites}} site(s)</span>
+        </div>
+
+        {{if .Sites}}
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Files</th>
+              <th>Last updated</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Sites}}
+            <tr>
+              <td class="name-cell">{{.Name}}</td>
+              <td>
+                {{if .IsSPA}}<span class="badge badge-spa">SPA</span>
+                {{else}}<span class="badge badge-static">static</span>{{end}}
+              </td>
+              <td class="muted">{{.Files}}</td>
+              <td class="muted">{{.ModTime}}</td>
+              <td>
+                <div class="actions">
+                  {{if .URL}}
+                  <a
+                    href="{{.URL}}"
+                    target="_blank"
+                    rel="noopener"
+                    class="btn btn-ghost"
+                    >↗ Open</a
+                  >
+                  {{end}}
+                  <form
+                    method="POST"
+                    action="/delete"
+                    onsubmit="return confirm('Delete site {{.Name}}?')"
+                  >
+                    <input type="hidden" name="name" value="{{.Name}}" />
+                    <button type="submit" class="btn btn-danger">Delete</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+        {{else}}
+        <p class="empty">No sites yet — deploy one above.</p>
+        {{end}}
+      </div>
+
+      <footer>sitehost backoffice &mdash; powered by Caddy + Go</footer>
+    </div>
+
+    <script>
+      const form = document.getElementById("upload-form");
+      const wrap = document.getElementById("progress-wrap");
+      const bar = document.getElementById("progress-bar");
+      const label = document.getElementById("progress-label");
+
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        const data = new FormData(form);
+        const xhr = new XMLHttpRequest();
+
+        wrap.style.display = "block";
+
+        xhr.upload.addEventListener("progress", function (ev) {
+          if (ev.lengthComputable) {
+            const pct = Math.round((ev.loaded / ev.total) * 100);
+            bar.style.width = pct + "%";
+            label.textContent = "Uploading… " + pct + "%";
+          }
+        });
+
+        xhr.addEventListener("load", function () {
+          window.location.href = xhr.responseURL || "/";
+        });
+
+        xhr.addEventListener("error", function () {
+          label.textContent = "Upload failed. Check your connection.";
+          bar.style.background = "#ef4444";
+        });
+
+        xhr.open("POST", "/upload");
+        xhr.send(data);
+      });
+    </script>
+  </body>
+</html>
