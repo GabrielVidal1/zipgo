@@ -102,6 +102,164 @@ else
   info "apps/root.txt already exists, skipping"
 fi
 
+# ── prompt for password ────────────────────────────────────────────────────
+if [ -z "$ZIPGO_PASS" ]; then
+  printf "  Set a backoffice password: "
+  read -rs ZIPGO_PASS </dev/tty
+  printf "\n"
+  [ -z "$ZIPGO_PASS" ] && ZIPGO_PASS="admin"
+fi
+
+# ── OS-specific background service setup ──────────────────────────────────
+printf "\n"
+printf "  Register zipgo as a background service that starts on boot? [Y/n] "
+read -r SETUP_SERVICE </dev/tty
+printf "\n"
+
+case "$SETUP_SERVICE" in
+  [nN]*) info "Skipping service setup." ;;
+  *)
+    case "$GOOS" in
+
+      # ── macOS: launchd ─────────────────────────────────────────────────
+      darwin)
+        PLIST_DIR="$HOME/Library/LaunchAgents"
+        PLIST_FILE="${PLIST_DIR}/com.zipgo.plist"
+        LOG_DIR="$HOME/Library/Logs/zipgo"
+        mkdir -p "$PLIST_DIR" "$LOG_DIR"
+
+        cat > "$PLIST_FILE" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>             <string>com.zipgo</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${DEST}</string>
+    <string>${INSTALL_DIR}/apps</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ZIPGO_PASS</key>      <string>${ZIPGO_PASS}</string>
+  </dict>
+  <key>RunAtLoad</key>         <true/>
+  <key>KeepAlive</key>         <true/>
+  <key>StandardOutPath</key>   <string>${LOG_DIR}/zipgo.log</string>
+  <key>StandardErrorPath</key> <string>${LOG_DIR}/zipgo.err</string>
+</dict>
+</plist>
+PLIST
+
+        launchctl unload "$PLIST_FILE" 2>/dev/null || true
+        launchctl load -w "$PLIST_FILE"
+        success "launchd agent registered → ${PLIST_FILE}"
+        info "Logs → ${LOG_DIR}/"
+        info "Stop:    launchctl unload ${PLIST_FILE}"
+        info "Start:   launchctl load -w ${PLIST_FILE}"
+        ;;
+
+      # ── Linux: systemd (user service, no sudo needed) ──────────────────
+      linux)
+        UNIT_DIR="$HOME/.config/systemd/user"
+        UNIT_FILE="${UNIT_DIR}/zipgo.service"
+        mkdir -p "$UNIT_DIR"
+
+        # Try user-level systemd first; fall back to system-level if available
+        if systemctl --user daemon-reload 2>/dev/null; then
+          cat > "$UNIT_FILE" <<UNIT
+[Unit]
+Description=zipgo static site server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=ZIPGO_PASS=${ZIPGO_PASS}
+ExecStart=${DEST} ${INSTALL_DIR}/apps
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
+UNIT
+
+          systemctl --user daemon-reload
+          systemctl --user enable --now zipgo
+          success "systemd user service registered → ${UNIT_FILE}"
+          info "Stop:    systemctl --user stop zipgo"
+          info "Start:   systemctl --user start zipgo"
+          info "Logs:    journalctl --user -fu zipgo"
+
+          # Enable linger so the service survives logout
+          if command -v loginctl >/dev/null 2>&1; then
+            loginctl enable-linger "$(whoami)" 2>/dev/null && \
+              info "loginctl linger enabled (service persists after logout)"
+          fi
+
+        else
+          # Fallback: system-level systemd (requires sudo)
+          SYSTEM_UNIT="/etc/systemd/system/zipgo.service"
+          ENV_FILE="/etc/zipgo/env"
+          sudo mkdir -p /etc/zipgo
+          printf 'ZIPGO_PASS=%s\n' "$ZIPGO_PASS" | sudo tee "$ENV_FILE" > /dev/null
+          sudo chmod 600 "$ENV_FILE"
+
+          cat <<UNIT | sudo tee "$SYSTEM_UNIT" > /dev/null
+[Unit]
+Description=zipgo static site server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=${ENV_FILE}
+ExecStart=${DEST} ${INSTALL_DIR}/apps
+Restart=on-failure
+RestartSec=5s
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now zipgo
+          success "systemd system service registered → ${SYSTEM_UNIT}"
+          info "Stop:    sudo systemctl stop zipgo"
+          info "Start:   sudo systemctl start zipgo"
+          info "Logs:    journalctl -fu zipgo"
+        fi
+        ;;
+
+      # ── Windows: Task Scheduler via schtasks ───────────────────────────
+      windows)
+        TASK_NAME="zipgo"
+        # Write a tiny wrapper bat so env var is set
+        BAT="${INSTALL_DIR}/zipgo-start.bat"
+        cat > "$BAT" <<BAT
+@echo off
+set ZIPGO_PASS=${ZIPGO_PASS}
+"${DEST}" "${INSTALL_DIR}/apps"
+BAT
+        # Register a task that runs at logon, hidden
+        schtasks //Create //F \
+          //TN "$TASK_NAME" \
+          //TR "\"${BAT}\"" \
+          //SC ONLOGON \
+          //RL HIGHEST \
+          //RU "$(whoami)" 2>/dev/null \
+          && success "Task Scheduler entry created: ${TASK_NAME}" \
+          || warn "Could not register Task Scheduler entry — run the command above as Administrator"
+
+        info "Start:   schtasks /Run /TN ${TASK_NAME}"
+        info "Stop:    schtasks /End /TN ${TASK_NAME}"
+        info "Remove:  schtasks /Delete /F /TN ${TASK_NAME}"
+        ;;
+    esac
+    ;;
+esac
+
 # ── done ───────────────────────────────────────────────────────────────────
 printf "\n"
 printf "%s\n" "  ${GREEN}${BOLD}zipgo ${LATEST} is ready!${RESET}"
@@ -111,11 +269,5 @@ printf "\n"
 printf "%s\n" "  ${CYAN}1.${RESET}  Edit apps/root.txt with your domain"
 printf "%s\n" "      ${GREY}(leave empty for localhost mode)${RESET}"
 printf "\n"
-printf "%s\n" "  ${CYAN}2.${RESET}  Set a password:"
-printf "%s\n" "      ${BOLD}export ZIPGO_PASS=yourpassword${RESET}"
-printf "\n"
-printf "%s\n" "  ${CYAN}3.${RESET}  Run:"
-printf "%s\n" "      ${BOLD}./${BINARY}${EXT} ${INSTALL_DIR}/apps${RESET}"
-printf "\n"
-printf "%s\n" "  ${GREY}Backoffice -> http://localhost:8999${RESET}"
+printf "%s\n" "  ${CYAN}2.${RESET}  Backoffice → ${BOLD}http://localhost:8999${RESET}"
 printf "\n"
