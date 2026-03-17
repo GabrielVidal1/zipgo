@@ -4,9 +4,9 @@
 package backoffice
 
 import (
-  _ "embed"
 	"archive/zip"
 	"bytes"
+	_ "embed"
 	"encoding/base64"
 	"fmt"
 	"html/template"
@@ -357,6 +357,7 @@ func FaviconBytes() []byte {
 }
 
 // ---------- HTML template ----------
+//
 //go:embed template.html
 var pageHTML string
 var pageTmpl = template.Must(template.New("page").Parse(pageHTML))

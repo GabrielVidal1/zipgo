@@ -22,6 +22,9 @@ help:
 	@printf '  \033[36mmake run-local\033[0m   run on localhost, no domain, no sudo\n'
 	@printf '  \033[36mmake clean\033[0m       remove compiled binary\n\n'
 
+format:
+	gofmt -w .
+
 ## build: compile the binary
 ## On macOS, codesign is required to add LC_UUID so dyld doesn't warn/crash.
 build:

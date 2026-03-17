@@ -3,8 +3,8 @@
 package landing
 
 import (
-  _ "embed"
 	"bytes"
+	_ "embed"
 	"fmt"
 	"html/template"
 	"os"

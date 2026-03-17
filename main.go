@@ -13,10 +13,10 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/fileserver"
+	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/rewrite"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls/standardstek"
-	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
 
 	"sitehost/internal/backoffice"
 	"sitehost/internal/builder"
