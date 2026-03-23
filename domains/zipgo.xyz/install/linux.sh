@@ -85,20 +85,14 @@ fi
 chmod +x "$DEST"
 success "Binary saved → ${DEST}"
 
-# ── create apps/ and root.txt ──────────────────────────────────────────────
-if [ ! -d "${INSTALL_DIR}/apps" ]; then
-  mkdir -p "${INSTALL_DIR}/apps"
-  success "Created apps/"
+# ── create domains/ directory ──────────────────────────────────────────────
+if [ ! -d "${INSTALL_DIR}/domains" ]; then
+  mkdir -p "${INSTALL_DIR}/domains"
+  success "Created domains/"
 else
-  info "apps/ already exists, skipping"
+  info "domains/ already exists, skipping"
 fi
-
-if [ ! -f "${INSTALL_DIR}/apps/root.txt" ]; then
-  printf "" > "${INSTALL_DIR}/apps/root.txt"
-  success "Created apps/root.txt  (empty = localhost mode)"
-else
-  info "apps/root.txt already exists, skipping"
-fi
+info "To configure a domain, create a folder: domains/<yourdomain.com>/"
 
 # ── prompt for zipgo password ──────────────────────────────────────────────
 if [ -z "$ZIPGO_PASS" ]; then

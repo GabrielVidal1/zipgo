@@ -17,38 +17,35 @@ import (
 	"strings"
 	"time"
 
+	"zipgo/internal/config"
 	"zipgo/internal/sites"
 )
 
 // Handler returns an http.Handler for the backoffice UI.
 //
-//   - appsDir      path to the apps/ directory
+//   - domainsDir   path to the domains/ directory
 //   - username     Basic Auth username
 //   - password     Basic Auth password
 //   - onReload     called after upload/delete to trigger a Caddy config reload
-//   - urlFor       returns the public URL for a given site name
+//   - urlFor       returns the public URL for a given domain + site name
 //   - vinceURL     public base URL of the Vince analytics instance
 //     (e.g. "https://analytics.example.com" or "http://localhost:8898").
 //     Pass an empty string to disable script injection.
-//   - rootDomain   apex domain (empty in localhost mode); used to derive the
-//     per-site data-domain attribute injected into uploaded HTML files.
 func Handler(
-	appsDir, username, password string,
+	domainsDir, username, password string,
 	onReload func() error,
-	urlFor func(string) string,
+	urlFor func(domain, name string) string,
 	vinceURL string,
-	rootDomain string,
 ) http.Handler {
 	mux := http.NewServeMux()
 
 	bo := &backoffice{
-		appsDir:    appsDir,
+		domainsDir: domainsDir,
 		username:   username,
 		password:   password,
 		onReload:   onReload,
 		urlFor:     urlFor,
 		vinceURL:   vinceURL,
-		rootDomain: rootDomain,
 	}
 
 	mux.HandleFunc("/", bo.auth(bo.handleIndex))
@@ -59,13 +56,12 @@ func Handler(
 }
 
 type backoffice struct {
-	appsDir    string
+	domainsDir string
 	username   string
 	password   string
 	onReload   func() error
-	urlFor     func(string) string
+	urlFor     func(domain, name string) string
 	vinceURL   string // public Vince base URL; empty = injection disabled
-	rootDomain string // apex domain ("" in localhost mode)
 }
 
 // ---------- auth middleware ----------
@@ -86,11 +82,13 @@ func (bo *backoffice) auth(next http.HandlerFunc) http.HandlerFunc {
 
 type pageData struct {
 	Sites   []siteInfo
+	Domains []string // available domain names for the upload selector
 	Flash   string
 	IsError bool
 }
 
 type siteInfo struct {
+	Domain  string
 	Name    string
 	IsSPA   bool
 	Files   int
@@ -103,17 +101,24 @@ func (bo *backoffice) handleIndex(w http.ResponseWriter, r *http.Request) {
 	isErr := r.URL.Query().Get("error") == "1"
 	data := pageData{Flash: flash, IsError: isErr}
 
-	discovered, _ := sites.Discover(bo.appsDir)
-	for _, s := range discovered {
-		count := countFiles(s.Path)
-		mod := latestMod(s.Path)
-		data.Sites = append(data.Sites, siteInfo{
-			Name:    s.Name,
-			IsSPA:   s.IsSPA,
-			Files:   count,
-			ModTime: mod,
-			URL:     bo.urlFor(s.Name),
-		})
+	domains, _ := config.ReadDomains(bo.domainsDir)
+	data.Domains = domains
+
+	for _, domain := range domains {
+		domainDir := filepath.Join(bo.domainsDir, domain)
+		discovered, _ := sites.Discover(domainDir)
+		for _, s := range discovered {
+			count := countFiles(s.Path)
+			mod := latestMod(s.Path)
+			data.Sites = append(data.Sites, siteInfo{
+				Domain:  domain,
+				Name:    s.Name,
+				IsSPA:   s.IsSPA,
+				Files:   count,
+				ModTime: mod,
+				URL:     bo.urlFor(domain, s.Name),
+			})
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -133,6 +138,16 @@ func (bo *backoffice) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// 100 MB max upload
 	if err := r.ParseMultipartForm(100 << 20); err != nil {
 		bo.redirectFlash(w, r, "Upload too large (max 100 MB)", true)
+		return
+	}
+
+	domain := strings.TrimSpace(r.FormValue("domain"))
+	if domain == "" {
+		bo.redirectFlash(w, r, "Domain is required", true)
+		return
+	}
+	if !isValidDomain(domain) {
+		bo.redirectFlash(w, r, "Invalid domain name", true)
 		return
 	}
 
@@ -159,7 +174,7 @@ func (bo *backoffice) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	destDir := filepath.Join(bo.appsDir, siteName)
+	destDir := filepath.Join(bo.domainsDir, domain, siteName)
 	_ = os.RemoveAll(destDir)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		bo.redirectFlash(w, r, "Could not create directory: "+err.Error(), true)
@@ -189,8 +204,8 @@ func (bo *backoffice) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	// ---- inject Vince analytics tracking script into all HTML files ----
 	if bo.vinceURL != "" {
-		domain := bo.siteDataDomain(siteName)
-		injectVinceScript(destDir, domain, bo.vinceURL)
+		siteDomain := bo.siteDataDomain(domain, siteName)
+		injectVinceScript(destDir, siteDomain, bo.vinceURL)
 	}
 
 	if bo.onReload != nil {
@@ -200,7 +215,7 @@ func (bo *backoffice) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	bo.redirectFlash(w, r, fmt.Sprintf("✅ Site \"%s\" deployed successfully", siteName), false)
+	bo.redirectFlash(w, r, fmt.Sprintf("✅ Site \"%s\" deployed to %s", siteName, domain), false)
 }
 
 // ---------- delete ----------
@@ -211,17 +226,18 @@ func (bo *backoffice) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	domain := strings.TrimSpace(r.FormValue("domain"))
 	siteName := strings.TrimSpace(r.FormValue("name"))
-	if siteName == "" || !isValidName(siteName) {
-		bo.redirectFlash(w, r, "Invalid site name", true)
+	if domain == "" || !isValidDomain(domain) || siteName == "" || !isValidName(siteName) {
+		bo.redirectFlash(w, r, "Invalid domain or site name", true)
 		return
 	}
 
-	target := filepath.Join(bo.appsDir, siteName)
-	// Safety: make sure we stay inside appsDir
+	target := filepath.Join(bo.domainsDir, domain, siteName)
+	// Safety: make sure we stay inside domainsDir
 	abs, _ := filepath.Abs(target)
-	appsAbs, _ := filepath.Abs(bo.appsDir)
-	if !strings.HasPrefix(abs, appsAbs+string(filepath.Separator)) {
+	domainsAbs, _ := filepath.Abs(bo.domainsDir)
+	if !strings.HasPrefix(abs, domainsAbs+string(filepath.Separator)) {
 		bo.redirectFlash(w, r, "Invalid path", true)
 		return
 	}
@@ -235,25 +251,24 @@ func (bo *backoffice) handleDelete(w http.ResponseWriter, r *http.Request) {
 		_ = bo.onReload()
 	}
 
-	bo.redirectFlash(w, r, fmt.Sprintf("🗑️  Site \"%s\" deleted", siteName), false)
+	bo.redirectFlash(w, r, fmt.Sprintf("🗑️  Site \"%s\" deleted from %s", siteName, domain), false)
 }
 
 // ---------- Vince script injection ------------------------------------------
 
 // siteDataDomain returns the value to use as the Vince data-domain attribute
-// for the given site name.
+// for the given domain + site name.
 //
-//   - domain mode  : siteName.rootDomain  (e.g. "blog.example.com")
-//                    "root" maps to the apex: "example.com"
-//   - localhost mode: siteName  (best-effort; Vince must have this site registered)
-func (bo *backoffice) siteDataDomain(siteName string) string {
-	if bo.rootDomain == "" {
+//   - "root" maps to the apex domain (e.g. "example.com")
+//   - others map to subdomain (e.g. "blog.example.com")
+func (bo *backoffice) siteDataDomain(domain, siteName string) string {
+	if domain == "" {
 		return siteName
 	}
 	if siteName == "root" {
-		return bo.rootDomain
+		return domain
 	}
-	return siteName + "." + bo.rootDomain
+	return siteName + "." + domain
 }
 
 // injectVinceScript walks destDir and injects the Vince tracking <script> tag
@@ -335,6 +350,14 @@ func isValidName(name string) bool {
 		}
 	}
 	return true
+}
+
+func isValidDomain(name string) bool {
+	return name != "" &&
+		strings.Contains(name, ".") &&
+		!strings.Contains(name, "/") &&
+		!strings.Contains(name, "..") &&
+		!strings.HasPrefix(name, ".")
 }
 
 func countFiles(dir string) int {

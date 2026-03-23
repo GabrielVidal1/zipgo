@@ -15,8 +15,14 @@ import (
 
 // ---- public helpers --------------------------------------------------------
 
-// IsLocalhost reports whether we are in localhost mode (no root domain).
-func IsLocalhost(rootDomain string) bool { return rootDomain == "" }
+// DomainSites pairs a domain name with its discovered sites.
+type DomainSites struct {
+	Domain string
+	Sites  []sites.Site
+}
+
+// IsLocalhost reports whether we are in localhost mode (no domains configured).
+func IsLocalhost(domains []string) bool { return len(domains) == 0 }
 
 // BackofficeHost returns the hostname used for the backoffice in domain mode.
 func BackofficeHost(rootDomain string) string { return "backoffice." + rootDomain }
@@ -24,8 +30,7 @@ func BackofficeHost(rootDomain string) string { return "backoffice." + rootDomai
 // VinceHost returns the hostname used for the Vince analytics UI in domain mode.
 func VinceHost(rootDomain string) string { return "analytics." + rootDomain }
 
-// LocalhostStartPort is the base port for sites in localhost mode.
-// Port 9000 is always the root/landing site; real sites start at 9001.
+// LocalhostStartPort is the single port used for all sites in localhost mode.
 const LocalhostStartPort = 9000
 
 // BackofficeLocalhostPort is the backoffice port in localhost mode.
@@ -67,21 +72,32 @@ func allowedBackofficeRanges() []string {
 // ---- domain mode -----------------------------------------------------------
 
 // BuildConfig serves every site on its subdomain over HTTPS (Let's Encrypt).
-func BuildConfig(rootDomain string, discovered []sites.Site, backofficeAddr string) (*caddy.Config, error) {
-	discovered = injectLanding(discovered, func(name string) string {
-		for _, s := range discovered {
-			if s.Name == name {
-				return "https://" + s.Host(rootDomain)
+// It supports multiple domains simultaneously.
+func BuildConfig(domainSites []DomainSites, backofficeAddr string) (*caddy.Config, error) {
+	for i := range domainSites {
+		ds := &domainSites[i]
+		domainLandingDir := landingDir + "-" + ds.Domain
+		ds.Sites = injectLanding(ds.Sites, func(name string) string {
+			for _, s := range ds.Sites {
+				if s.Name == name {
+					return "https://" + s.Host(ds.Domain)
+				}
 			}
-		}
-		return ""
-	})
+			return ""
+		}, domainLandingDir)
+	}
 
-	routesJSON, err := domainRoutes(rootDomain, discovered, backofficeAddr)
+	routesJSON, err := domainRoutes(domainSites, backofficeAddr)
 	if err != nil {
 		return nil, err
 	}
-	subjects, _ := json.Marshal([]string{rootDomain, "*." + rootDomain})
+
+	// TLS subjects for all configured domains and their wildcards.
+	var allSubjects []string
+	for _, ds := range domainSites {
+		allSubjects = append(allSubjects, ds.Domain, "*."+ds.Domain)
+	}
+	subjects, _ := json.Marshal(allSubjects)
 
 	raw := fmt.Sprintf(`{
 		"logging": {
@@ -111,58 +127,49 @@ func BuildConfig(rootDomain string, discovered []sites.Site, backofficeAddr stri
 	return unmarshal(raw)
 }
 
-func domainRoutes(rootDomain string, discovered []sites.Site, backofficeAddr string) (string, error) {
+func domainRoutes(domainSites []DomainSites, backofficeAddr string) (string, error) {
 	var parts []string
 
-	boHost, _ := json.Marshal(BackofficeHost(rootDomain))
-	boAddr, _ := json.Marshal(backofficeAddr)
+	// Collect backoffice and vince hosts across all domains.
+	var boHosts, vinceHosts []string
+	for _, ds := range domainSites {
+		boHosts = append(boHosts, BackofficeHost(ds.Domain))
+		vinceHosts = append(vinceHosts, VinceHost(ds.Domain))
+	}
+	boHostsJSON, _ := json.Marshal(boHosts)
+	boAddrJSON, _ := json.Marshal(backofficeAddr)
 
 	allowedRanges := allowedBackofficeRanges()
-
 	if len(allowedRanges) > 0 {
 		allowJSON, _ := json.Marshal(allowedRanges)
-
-		// Block non-allowed IPs for the backoffice host.
 		parts = append(parts, fmt.Sprintf(`{
-			"match": [
-				{
-					"host": [%s],
-					"not": [{"remote_ip": {"ranges": %s}}]
-				}
-			],
+			"match": [{"host": %s, "not": [{"remote_ip": {"ranges": %s}}]}],
 			"handle": [{"handler": "static_response", "status_code": "403", "body": "Forbidden"}],
 			"terminal": true
-		}`, boHost, allowJSON))
-
-		// Proxy allowed IPs to the backoffice.
-		parts = append(parts, fmt.Sprintf(`{
-			"match": [{"host": [%s]}],
-			"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
-			"terminal": true
-		}`, boHost, boAddr))
-	} else {
-		parts = append(parts, fmt.Sprintf(`{
-			"match": [{"host": [%s]}],
-			"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
-			"terminal": true
-		}`, boHost, boAddr))
+		}`, boHostsJSON, allowJSON))
 	}
-
-	// Vince analytics route — proxy analytics.<rootDomain> to the sidecar.
-	vinceHost, _ := json.Marshal(VinceHost(rootDomain))
-	vinceAddr, _ := json.Marshal(vinceInternalAddr)
 	parts = append(parts, fmt.Sprintf(`{
-		"match": [{"host": [%s]}],
+		"match": [{"host": %s}],
 		"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
 		"terminal": true
-	}`, vinceHost, vinceAddr))
+	}`, boHostsJSON, boAddrJSON))
 
-	for _, s := range discovered {
-		r, err := domainRouteJSON(s, rootDomain)
-		if err != nil {
-			return "", fmt.Errorf("site %s: %w", s.Name, err)
+	vinceHostsJSON, _ := json.Marshal(vinceHosts)
+	vinceAddrJSON, _ := json.Marshal(vinceInternalAddr)
+	parts = append(parts, fmt.Sprintf(`{
+		"match": [{"host": %s}],
+		"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
+		"terminal": true
+	}`, vinceHostsJSON, vinceAddrJSON))
+
+	for _, ds := range domainSites {
+		for _, s := range ds.Sites {
+			r, err := domainRouteJSON(s, ds.Domain)
+			if err != nil {
+				return "", fmt.Errorf("domain %s site %s: %w", ds.Domain, s.Name, err)
+			}
+			parts = append(parts, r)
 		}
-		parts = append(parts, r)
 	}
 	return "[" + strings.Join(parts, ",") + "]", nil
 }
@@ -184,52 +191,62 @@ func domainRouteJSON(s sites.Site, rootDomain string) (string, error) {
 
 // ---- localhost mode --------------------------------------------------------
 
-// BuildLocalhostConfig serves each site on its own port.
-// Port 9000 is always root (real or generated landing page).
-// Real sites start at 9001.
-// Port 8999 is the backoffice.
-// Port 8898 proxies to the Vince sidecar on 8899.
-func BuildLocalhostConfig(discovered []sites.Site, backofficeAddr string) (*caddy.Config, error) {
-	discovered = injectLanding(discovered, func(name string) string {
-		for i, s := range discovered {
-			if s.Name == name {
-				return fmt.Sprintf("http://localhost:%d", LocalhostStartPort+1+i)
+// BuildLocalhostConfig serves all sites on a single port (9000) using path
+// routing: localhost:9000/<domain>/<subdomain>.
+// The "root" subdomain maps to localhost:9000/<domain> (no extra segment).
+// Port 8999 is the backoffice; port 8898 proxies to Vince.
+func BuildLocalhostConfig(domainSites []DomainSites, backofficeAddr string) (*caddy.Config, error) {
+	// Inject landing per domain with path-based URLs.
+	for i := range domainSites {
+		ds := &domainSites[i]
+		domainLandingDir := landingDir + "-" + ds.Domain
+		ds.Sites = injectLanding(ds.Sites, func(name string) string {
+			prefix := "/" + ds.Domain
+			if name != "root" {
+				prefix += "/" + name
+			}
+			return fmt.Sprintf("http://localhost:%d%s", LocalhostStartPort, prefix)
+		}, domainLandingDir)
+	}
+
+	var routes []string
+
+	// Build one route per site. Non-root sites come first (more specific paths)
+	// so they are matched before the root catch-all for each domain.
+	for _, ds := range domainSites {
+		var nonRoot, rootSites []sites.Site
+		for _, s := range ds.Sites {
+			if s.Name == "root" {
+				rootSites = append(rootSites, s)
+			} else {
+				nonRoot = append(nonRoot, s)
 			}
 		}
-		return ""
-	})
+		for _, s := range append(nonRoot, rootSites...) {
+			pathPrefix := "/" + ds.Domain
+			if s.Name != "root" {
+				pathPrefix += "/" + s.Name
+			}
 
-	var serverEntries []string
+			absPath, err := filepath.Abs(s.Path)
+			if err != nil {
+				return nil, fmt.Errorf("domain %s site %s: %w", ds.Domain, s.Name, err)
+			}
+			rootJSON, _ := json.Marshal(absPath)
+			pathMatchJSON, _ := json.Marshal([]string{pathPrefix, pathPrefix + "/*"})
+			prefixJSON, _ := json.Marshal(pathPrefix)
 
-	// Backoffice server.
-	boAddr, _ := json.Marshal(backofficeAddr)
-	serverEntries = append(serverEntries, fmt.Sprintf(`"backoffice": {
-		"listen": ["127.0.0.1:%d"],
-		"routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}]}]
-	}`, BackofficeLocalhostPort, boAddr))
-
-	// Vince analytics proxy server.
-	vinceAddr, _ := json.Marshal(vinceInternalAddr)
-	serverEntries = append(serverEntries, fmt.Sprintf(`"vince": {
-		"listen": ["127.0.0.1:%d"],
-		"routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}]}]
-	}`, vinceLocalhostProxyPort, vinceAddr))
-
-	// discovered[0] is always root (port 9000), rest are 9001+.
-	for i, s := range discovered {
-		port := LocalhostStartPort + i
-		absPath, err := filepath.Abs(s.Path)
-		if err != nil {
-			return nil, fmt.Errorf("site %s: %w", s.Name, err)
+			routes = append(routes, fmt.Sprintf(`{
+				"match": [{"path": %s}],
+				"handle": [%s],
+				"terminal": true
+			}`, pathMatchJSON, localhostFileHandler(rootJSON, s.IsSPA, prefixJSON)))
 		}
-		root, _ := json.Marshal(absPath)
-		key, _ := json.Marshal(s.Name)
-
-		serverEntries = append(serverEntries, fmt.Sprintf(`%s: {
-			"listen": ["127.0.0.1:%d"],
-			"routes": [{"handle": [%s]}]
-		}`, key, port, fileHandler(root, s.IsSPA)))
 	}
+
+	routesJSON := "[" + strings.Join(routes, ",") + "]"
+	boAddr, _ := json.Marshal(backofficeAddr)
+	vinceAddr, _ := json.Marshal(vinceInternalAddr)
 
 	raw := fmt.Sprintf(`{
 		"logging": {
@@ -239,26 +256,41 @@ func BuildLocalhostConfig(discovered []sites.Site, backofficeAddr string) (*cadd
 		},
 		"admin": {"disabled": true},
 		"apps": {
-			"http": {"servers": {%s}},
+			"http": {
+				"servers": {
+					"sites": {
+						"listen": ["127.0.0.1:%d"],
+						"routes": %s
+					},
+					"backoffice": {
+						"listen": ["127.0.0.1:%d"],
+						"routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}]}]
+					},
+					"vince": {
+						"listen": ["127.0.0.1:%d"],
+						"routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}]}]
+					}
+				}
+			},
 			"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}
 		}
-	}`, strings.Join(serverEntries, ","))
+	}`, LocalhostStartPort, routesJSON, BackofficeLocalhostPort, boAddr, vinceLocalhostProxyPort, vinceAddr)
 
 	return unmarshal(raw)
 }
 
 // ---- landing injection -----------------------------------------------------
 
-func injectLanding(discovered []sites.Site, urlFor func(string) string) []sites.Site {
+func injectLanding(discovered []sites.Site, urlFor func(string) string, destDir string) []sites.Site {
 	if HasRootSite(discovered) {
 		return discovered
 	}
-	if _, err := landing.Generate(discovered, urlFor, landingDir); err != nil {
+	if _, err := landing.Generate(discovered, urlFor, destDir); err != nil {
 		return discovered
 	}
 	return append([]sites.Site{{
 		Name:  "root",
-		Path:  landingDir,
+		Path:  destDir,
 		IsSPA: false,
 	}}, discovered...)
 }
@@ -273,6 +305,45 @@ func HasRootSite(discovered []sites.Site) bool {
 }
 
 // ---- shared file-serving handler JSON --------------------------------------
+
+// localhostFileHandler wraps fileHandler with a strip_path_prefix rewrite so
+// that sites served under a path prefix (e.g. /domain/name) receive requests
+// as if they were at the root.
+func localhostFileHandler(root json.RawMessage, isSPA bool, pathPrefix json.RawMessage) string {
+	secHeaders := securityHeadersHandler()
+	stripRewrite := fmt.Sprintf(`{"handler": "rewrite", "strip_path_prefix": %s}`, pathPrefix)
+
+	if isSPA {
+		return fmt.Sprintf(`{
+			"handler": "subroute",
+			"routes": [
+				{"handle": [%s]},
+				{"handle": [%s]},
+				{
+					"match": [{"file": {"root": %s, "try_files": ["{http.request.uri.path}", "{http.request.uri.path}/index.html"]}}],
+					"handle": [
+						{"handler": "rewrite", "uri": "{http.matchers.file.relative}"},
+						{"handler": "file_server", "root": %s, "index_names": ["index.html"]}
+					]
+				},
+				{
+					"handle": [
+						{"handler": "rewrite", "uri": "/index.html"},
+						{"handler": "file_server", "root": %s}
+					]
+				}
+			]
+		}`, secHeaders, stripRewrite, root, root, root)
+	}
+	return fmt.Sprintf(`{
+		"handler": "subroute",
+		"routes": [
+			{"handle": [%s]},
+			{"handle": [%s]},
+			{"handle": [{"handler": "file_server", "root": %s, "index_names": ["index.html", "index.htm"], "browse": {}}]}
+		]
+	}`, secHeaders, stripRewrite, root)
+}
 
 func securityHeadersHandler() string {
 	return `{

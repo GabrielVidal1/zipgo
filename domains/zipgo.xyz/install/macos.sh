@@ -25,7 +25,7 @@ printf "%s\n" "  ${GREY}one binary, many sites${RESET}"
 printf "\n"
 
 # ── detect arch ────────────────────────────────────────────────────────────
-GOOS="windows"
+GOOS="darwin"
 ARCH="$(uname -m)"
 
 case "$ARCH" in
@@ -34,7 +34,7 @@ case "$ARCH" in
   *)             fatal "Unsupported architecture: $ARCH" ;;
 esac
 
-EXT=".exe"
+EXT=""
 info "Platform: ${BOLD}${GOOS}/${GOARCH}${RESET}"
 
 # ── resolve latest zipgo release tag ──────────────────────────────────────
@@ -85,20 +85,14 @@ fi
 chmod +x "$DEST"
 success "Binary saved → ${DEST}"
 
-# ── create apps/ and root.txt ──────────────────────────────────────────────
-if [ ! -d "${INSTALL_DIR}/apps" ]; then
-  mkdir -p "${INSTALL_DIR}/apps"
-  success "Created apps/"
+# ── create domains/ directory ──────────────────────────────────────────────
+if [ ! -d "${INSTALL_DIR}/domains" ]; then
+  mkdir -p "${INSTALL_DIR}/domains"
+  success "Created domains/"
 else
-  info "apps/ already exists, skipping"
+  info "domains/ already exists, skipping"
 fi
-
-if [ ! -f "${INSTALL_DIR}/apps/root.txt" ]; then
-  printf "" > "${INSTALL_DIR}/apps/root.txt"
-  success "Created apps/root.txt  (empty = localhost mode)"
-else
-  info "apps/root.txt already exists, skipping"
-fi
+info "To configure a domain, create a folder: domains/<yourdomain.com>/"
 
 # ── prompt for zipgo password ──────────────────────────────────────────────
 if [ -z "$ZIPGO_PASS" ]; then
@@ -185,42 +179,73 @@ case "$SETUP_SERVICE" in
   [nN]*) info "Skipping service setup." ;;
   *)
 
-    # ── Windows: Task Scheduler via schtasks ───────────────────────────
-    TASK_NAME="zipgo"
-    BAT="${INSTALL_DIR}/zipgo-start.bat"
-    cat > "$BAT" <<BAT
-@echo off
-set ZIPGO_PASS=${ZIPGO_PASS}
-set VINCE_MANAGED=1
-"${DEST}" "${INSTALL_DIR}/apps"
-BAT
-    schtasks //Create //F \
-      //TN "$TASK_NAME" \
-      //TR "\"${BAT}\"" \
-      //SC ONLOGON \
-      //RL HIGHEST \
-      //RU "$(whoami)" 2>/dev/null \
-      && success "Task Scheduler entry created: ${TASK_NAME}" \
-      || warn "Could not register Task Scheduler entry — run the command above as Administrator"
+    # ── macOS: launchd ─────────────────────────────────────────────────
+    PLIST_DIR="$HOME/Library/LaunchAgents"
+    LOG_DIR="$HOME/Library/Logs/zipgo"
+    mkdir -p "$PLIST_DIR" "$LOG_DIR"
 
-    info "Start:   schtasks /Run /TN ${TASK_NAME}"
-    info "Stop:    schtasks /End /TN ${TASK_NAME}"
-    info "Remove:  schtasks /Delete /F /TN ${TASK_NAME}"
+    # zipgo plist
+    PLIST_FILE="${PLIST_DIR}/com.zipgo.plist"
+    cat > "$PLIST_FILE" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>             <string>com.zipgo</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${DEST}</string>
+    <string>${INSTALL_DIR}/apps</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ZIPGO_PASS</key>      <string>${ZIPGO_PASS}</string>
+    <key>VINCE_MANAGED</key>   <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>         <true/>
+  <key>KeepAlive</key>         <true/>
+  <key>StandardOutPath</key>   <string>${LOG_DIR}/zipgo.log</string>
+  <key>StandardErrorPath</key> <string>${LOG_DIR}/zipgo.err</string>
+</dict>
+</plist>
+PLIST
+    launchctl unload "$PLIST_FILE" 2>/dev/null || true
+    launchctl load -w "$PLIST_FILE"
+    success "launchd agent registered → ${PLIST_FILE}"
+    info "Logs → ${LOG_DIR}/"
+    info "Stop:    launchctl unload ${PLIST_FILE}"
+    info "Start:   launchctl load -w ${PLIST_FILE}"
 
+    # vince plist (only if binary was downloaded)
     if [ -n "$VINCE_DEST" ]; then
-      VINCE_BAT="${INSTALL_DIR}/vince-start.bat"
-      cat > "$VINCE_BAT" <<BAT
-@echo off
-"${VINCE_DEST}" serve --data "${VINCE_DATA}" --listen 127.0.0.1:8899
-BAT
-      schtasks //Create //F \
-        //TN "vince" \
-        //TR "\"${VINCE_BAT}\"" \
-        //SC ONLOGON //RL HIGHEST //RU "$(whoami)" 2>/dev/null \
-        && success "Vince Task Scheduler entry created" \
-        || warn "Could not register Vince — run as Administrator"
-      info "Start:   schtasks /Run /TN vince"
-      info "Stop:    schtasks /End /TN vince"
+      VINCE_PLIST="${PLIST_DIR}/com.vince.plist"
+      cat > "$VINCE_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>             <string>com.vince</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${VINCE_DEST}</string>
+    <string>serve</string>
+    <string>--data</string>    <string>${VINCE_DATA}</string>
+    <string>--listen</string>  <string>127.0.0.1:8899</string>
+  </array>
+  <key>RunAtLoad</key>         <true/>
+  <key>KeepAlive</key>         <true/>
+  <key>StandardOutPath</key>   <string>${LOG_DIR}/vince.log</string>
+  <key>StandardErrorPath</key> <string>${LOG_DIR}/vince.err</string>
+</dict>
+</plist>
+PLIST
+      launchctl unload "$VINCE_PLIST" 2>/dev/null || true
+      launchctl load -w "$VINCE_PLIST"
+      success "Vince launchd agent registered → ${VINCE_PLIST}"
+      info "Stop:    launchctl unload ${VINCE_PLIST}"
+      info "Start:   launchctl load -w ${VINCE_PLIST}"
     fi
 
     ;;

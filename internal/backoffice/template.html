@@ -333,7 +333,7 @@
 
       .list-header {
         display: grid;
-        grid-template-columns: 2fr 76px 72px 1fr 110px;
+        grid-template-columns: 1fr 1.5fr 76px 72px 1fr 110px;
         padding: 0 20px;
         border-bottom: 1px solid var(--faint);
         background: var(--off);
@@ -352,7 +352,7 @@
 
       .site-row {
         display: grid;
-        grid-template-columns: 2fr 76px 72px 1fr 110px;
+        grid-template-columns: 1fr 1.5fr 76px 72px 1fr 110px;
         align-items: center;
         padding: 0 20px;
         border-bottom: 1px solid var(--faint);
@@ -369,6 +369,15 @@
         display: none;
       }
 
+      .col-domain {
+        font-family: "DM Mono", monospace;
+        font-size: 11px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        padding-right: 12px;
+      }
       .col-name {
         font-family: "DM Mono", monospace;
         font-size: 13px;
@@ -493,29 +502,34 @@
         }
         .site-row {
           grid-template-columns: 1fr auto;
-          grid-template-rows: auto auto;
-          gap: 4px;
+          grid-template-rows: auto auto auto;
+          gap: 2px;
           padding: 12px 16px;
           min-height: auto;
         }
-        .col-name {
+        .col-domain {
           grid-column: 1;
           grid-row: 1;
+          font-size: 10px;
+        }
+        .col-name {
+          grid-column: 1;
+          grid-row: 2;
         }
         .col-type {
           grid-column: 2;
-          grid-row: 1;
+          grid-row: 2;
         }
         .col-files {
           grid-column: 1;
-          grid-row: 2;
+          grid-row: 3;
         }
         .col-time {
           display: none;
         }
         .col-actions {
           grid-column: 2;
-          grid-row: 2;
+          grid-row: 3;
         }
       }
 
@@ -627,6 +641,23 @@
       }
       .modal-field input[type="text"]::placeholder {
         color: rgba(255, 255, 255, 0.2);
+      }
+      .modal-field input[type="text"].domain-input,
+      .modal-field input.domain-input {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        color: #fff;
+        padding: 10px 13px;
+        font-family: "DM Mono", monospace;
+        font-size: 13px;
+        outline: none;
+        transition: border-color 0.2s, background 0.2s;
+      }
+      .modal-field input.domain-input:focus {
+        border-color: var(--go);
+        background: rgba(255, 255, 255, 0.09);
       }
       .modal-field .hint {
         font-family: "DM Mono", monospace;
@@ -880,6 +911,7 @@
         {{if .Sites}}
         <div class="sites-list" id="sites-list">
           <div class="list-header">
+            <span>Domain</span>
             <span>Name</span>
             <span>Type</span>
             <span>Files</span>
@@ -891,8 +923,10 @@
           <div
             class="site-row"
             data-name="{{.Name}}"
+            data-domain="{{.Domain}}"
             data-type="{{if .IsSPA}}spa{{else}}static{{end}}"
           >
+            <div class="col-domain">{{.Domain}}</div>
             <div class="col-name">{{.Name}}</div>
             <div class="col-type">
               {{if .IsSPA}}<span class="badge badge-spa">SPA</span>
@@ -918,8 +952,9 @@
               <form
                 method="POST"
                 action="/delete"
-                onsubmit="return confirm('Delete {{.Name}}?')"
+                onsubmit="return confirm('Delete {{.Name}} from {{.Domain}}?')"
               >
+                <input type="hidden" name="domain" value="{{.Domain}}" />
                 <input type="hidden" name="name" value="{{.Name}}" />
                 <button type="submit" class="btn-del" title="Delete {{.Name}}">
                   <i
@@ -997,6 +1032,22 @@
             action="/upload"
             enctype="multipart/form-data"
           >
+            <div class="modal-field">
+              <label for="domain">Domain</label>
+              <input
+                type="text"
+                id="domain"
+                name="domain"
+                class="domain-input"
+                placeholder="example.com"
+                list="domain-list"
+                required
+                autocomplete="off"
+              />
+              <datalist id="domain-list">
+                {{range .Domains}}<option value="{{.}}">{{end}}
+              </datalist>
+            </div>
             <div class="modal-field">
               <label for="name"
                 >Site name
@@ -1164,7 +1215,8 @@
         const q = document.getElementById("search").value.trim().toLowerCase();
         let visible = 0;
         rows.forEach((row) => {
-          const nameMatch = !q || row.dataset.name.toLowerCase().includes(q);
+          const nameMatch = !q || row.dataset.name.toLowerCase().includes(q) ||
+            (row.dataset.domain && row.dataset.domain.toLowerCase().includes(q));
           const typeMatch =
             activeFilter === "all" || row.dataset.type === activeFilter;
           const show = nameMatch && typeMatch;

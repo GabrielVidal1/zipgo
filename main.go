@@ -31,16 +31,21 @@ import (
 const backofficeInternalPort = "9876"
 
 func main() {
-	appsDir := "apps"
+	domainsDir := "domains"
 	if len(os.Args) > 1 {
-		appsDir = os.Args[1]
+		domainsDir = os.Args[1]
 	}
 
-	// ---- root domain (empty = localhost mode) ----
-	rootDomain, err := config.ReadRootDomain(appsDir)
+	// ---- discover domains ----
+	domains, err := config.ReadDomains(domainsDir)
 	if err != nil {
 		log.Fatalf("❌  %v\n", err)
 	}
+
+	// isLocalhost is true when no domains are configured, or when the
+	// ZIPGO_LOCALHOST env var is set (useful for make run-local with real
+	// domain folders — serves on a single port with path routing).
+	isLocalhost := len(domains) == 0 || os.Getenv("ZIPGO_LOCALHOST") == "1"
 
 	// ---- credentials ----
 	boUser := envOr("ZIPGO_USER", "admin")
@@ -56,31 +61,38 @@ func main() {
 	backofficeAddr := "127.0.0.1:" + backofficeInternalPort
 
 	// ---- vince analytics sidecar ----
-	// vinceURL is the public-facing URL of the Vince instance, used both to
-	// configure the Caddy reverse-proxy route and to inject the <script> tag
-	// into uploaded HTML files.
 	vinceURL := ""
-	if rootDomain != "" {
-		vinceURL = "https://analytics." + rootDomain
+	if !isLocalhost && len(domains) > 0 {
+		vinceURL = "https://analytics." + domains[0]
 	} else {
 		vinceURL = "http://localhost:8898"
 	}
+	vinceCmd := startVinceSidecar(vinceURL)
 
-	// Start vince as a subprocess unless a service manager already owns it
-	// (VINCE_MANAGED=1, set by the systemd/launchd units from install.sh).
-	vinceCmd := startVinceSidecar(rootDomain, vinceURL)
+	// ---- discoverAll: build []DomainSites for all configured domains ----
+	discoverAll := func() ([]builder.DomainSites, error) {
+		var result []builder.DomainSites
+		for _, d := range domains {
+			disc, err := sites.Discover(filepath.Join(domainsDir, d))
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, builder.DomainSites{Domain: d, Sites: disc})
+		}
+		return result, nil
+	}
 
-	// ---- reload: re-discover apps and push new config to Caddy ----
+	// ---- reload: re-discover and push new config to Caddy ----
 	reload := func() error {
-		disc, err := sites.Discover(appsDir)
+		domainSites, err := discoverAll()
 		if err != nil {
 			return err
 		}
 		var cfg *caddy.Config
-		if builder.IsLocalhost(rootDomain) {
-			cfg, err = builder.BuildLocalhostConfig(disc, backofficeAddr)
+		if isLocalhost {
+			cfg, err = builder.BuildLocalhostConfig(domainSites, backofficeAddr)
 		} else {
-			cfg, err = builder.BuildConfig(rootDomain, disc, backofficeAddr)
+			cfg, err = builder.BuildConfig(domainSites, backofficeAddr)
 		}
 		if err != nil {
 			return err
@@ -89,26 +101,20 @@ func main() {
 	}
 
 	// ---- urlFor: compute public URL for a site name on demand ----
-	urlFor := func(name string) string {
-		disc, _ := sites.Discover(appsDir)
-		if builder.IsLocalhost(rootDomain) {
-			for i, s := range disc {
-				if s.Name == name {
-					return fmt.Sprintf("http://localhost:%d", builder.LocalhostStartPort+1+i)
-				}
+	urlFor := func(domain, name string) string {
+		if isLocalhost {
+			prefix := fmt.Sprintf("http://localhost:%d/%s", builder.LocalhostStartPort, domain)
+			if name != "root" {
+				prefix += "/" + name
 			}
-			return ""
+			return prefix
 		}
-		for _, s := range disc {
-			if s.Name == name {
-				return "https://" + s.Host(rootDomain)
-			}
-		}
-		return ""
+		s := sites.Site{Name: name}
+		return "https://" + s.Host(domain)
 	}
 
 	// ---- start backoffice HTTP server on loopback ----
-	boHandler := backoffice.Handler(appsDir, boUser, boPass, reload, urlFor, vinceURL, rootDomain)
+	boHandler := backoffice.Handler(domainsDir, boUser, boPass, reload, urlFor, vinceURL)
 	boListener, err := net.Listen("tcp", backofficeAddr)
 	if err != nil {
 		log.Fatalf("❌  Could not bind internal port %s: %v\n", backofficeInternalPort, err)
@@ -120,71 +126,67 @@ func main() {
 		}
 	}()
 
-	// ---- discover sites ----
-	discovered, err := sites.Discover(appsDir)
+	// ---- discover sites and build config ----
+	domainSites, err := discoverAll()
 	if err != nil {
 		log.Fatalf("❌  %v\n", err)
 	}
 
-	// ---- build config and print summary ----
 	var cfg *caddy.Config
-	hasRoot := builder.HasRootSite(discovered)
 
-	if builder.IsLocalhost(rootDomain) {
-		fmt.Println("🖥️   Localhost mode (no apps/root.txt found)")
-		fmt.Printf("📁  Sites found : %d\n\n", len(discovered))
-
-		if hasRoot {
-			fmt.Printf("   [static]  http://localhost:%-5d  →  root\n", builder.LocalhostStartPort)
-		} else {
-			fmt.Printf("   [land ]   http://localhost:%-5d  →  (landing page)\n", builder.LocalhostStartPort)
+	if isLocalhost {
+		totalSites := 0
+		for _, ds := range domainSites {
+			totalSites += len(ds.Sites)
 		}
-		for i, s := range discovered {
-			if s.Name == "root" {
-				continue
+		fmt.Println("🖥️   Localhost mode")
+		fmt.Printf("📁  Domains: %d  Sites: %d\n\n", len(domainSites), totalSites)
+		for _, ds := range domainSites {
+			for _, s := range ds.Sites {
+				path := "/" + ds.Domain
+				if s.Name != "root" {
+					path += "/" + s.Name
+				}
+				kind := "static"
+				if s.IsSPA {
+					kind = "spa   "
+				}
+				fmt.Printf("   [%s]  http://localhost:%d%s\n", kind, builder.LocalhostStartPort, path)
 			}
-			port := builder.LocalhostStartPort + 1 + i
-			kind := "static"
-			if s.IsSPA {
-				kind = "spa"
-			}
-			fmt.Printf("   [%s]   http://localhost:%-5d  →  %s\n", kind, port, s.Name)
 		}
-		fmt.Printf("   [ui  ]   http://localhost:%d    →  backoffice\n", builder.BackofficeLocalhostPort)
+		fmt.Printf("   [ui    ]  http://localhost:%d  →  backoffice\n", builder.BackofficeLocalhostPort)
 		if vinceCmd != nil {
-			fmt.Printf("   [anly]   http://localhost:8898    →  analytics (vince)\n")
+			fmt.Printf("   [anly  ]  http://localhost:8898   →  analytics (vince)\n")
 		}
 		fmt.Println()
-
-		cfg, err = builder.BuildLocalhostConfig(discovered, backofficeAddr)
+		cfg, err = builder.BuildLocalhostConfig(domainSites, backofficeAddr)
 	} else {
-		fmt.Printf("🌐  Root domain : %s\n", rootDomain)
-		fmt.Printf("📁  Sites found : %d\n\n", len(discovered))
-
-		if !hasRoot {
-			fmt.Printf("   [land ]  https://%s  →  (landing page)\n", rootDomain)
-		}
-		for _, s := range discovered {
-			kind := "static"
-			if s.IsSPA {
-				kind = "spa"
+		for _, ds := range domainSites {
+			fmt.Printf("🌐  Domain : %s (%d sites)\n", ds.Domain, len(ds.Sites))
+			if !builder.HasRootSite(ds.Sites) {
+				fmt.Printf("   [land  ]  https://%s  →  (landing page)\n", ds.Domain)
 			}
-			fmt.Printf("   [%s]  https://%s\n", kind, s.Host(rootDomain))
-		}
-		fmt.Printf("   [ui  ]  https://%s  (backoffice)\n", builder.BackofficeHost(rootDomain))
-		if vinceCmd != nil {
-			fmt.Printf("   [anly]  https://%s  (analytics)\n", builder.VinceHost(rootDomain))
+			for _, s := range ds.Sites {
+				kind := "static"
+				if s.IsSPA {
+					kind = "spa   "
+				}
+				fmt.Printf("   [%s]  https://%s\n", kind, s.Host(ds.Domain))
+			}
+			fmt.Printf("   [ui    ]  https://%s  (backoffice)\n", builder.BackofficeHost(ds.Domain))
+			if vinceCmd != nil {
+				fmt.Printf("   [anly  ]  https://%s  (analytics)\n", builder.VinceHost(ds.Domain))
+			}
 		}
 		fmt.Println()
-
-		cfg, err = builder.BuildConfig(rootDomain, discovered, backofficeAddr)
+		cfg, err = builder.BuildConfig(domainSites, backofficeAddr)
 	}
 	if err != nil {
 		log.Fatalf("❌  Could not build config: %v\n", err)
 	}
 
 	// ---- start Caddy ----
-	if builder.IsLocalhost(rootDomain) {
+	if isLocalhost {
 		fmt.Println("🚀  Starting server (HTTP, no TLS)...")
 	} else {
 		fmt.Println("🚀  Starting Caddy (HTTPS via Let's Encrypt)...")
@@ -215,7 +217,7 @@ func main() {
 //
 // It passes --url so Vince knows its own public address for link generation.
 // Returns the running *exec.Cmd, or nil if Vince was not started.
-func startVinceSidecar(rootDomain, vinceURL string) *exec.Cmd {
+func startVinceSidecar(vinceURL string) *exec.Cmd {
 	// Service manager already owns vince — don't double-start.
 	// if os.Getenv("VINCE_MANAGED") == "1" {
 	// 	return nil
