@@ -187,8 +187,19 @@ func domainRouteJSON(s sites.Site, rootDomain string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	host, _ := json.Marshal(s.Host(rootDomain))
 	root, _ := json.Marshal(absPath)
+
+	if s.Name == "root" {
+		host, _ := json.Marshal(rootDomain)
+		path, _ := json.Marshal("/index.html")
+		return fmt.Sprintf(`{
+		"match": [{"host": [%s], "path": [%s]}],
+		"handle": [%s],
+		"terminal": true
+	}`, host, path, fileHandler(root, s.IsSPA)), nil
+	}
+
+	host, _ := json.Marshal(s.Host(rootDomain))
 
 	return fmt.Sprintf(`{
 		"match": [{"host": [%s]}],
