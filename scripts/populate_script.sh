@@ -21,9 +21,9 @@ mkdir -p "$OUTPUT_DIR"
 # Parts are concatenated in order with a blank line between each.
 
 MANIFESTS=(
-  "linux.sh|00_header 01_detect_linux 02_fetch_release 03_download_and_setup 04_vince_install 05_service_prompt 06_service_linux 07_footer"
-  "macos.sh|00_header 01_detect_macos 02_fetch_release 03_download_and_setup 04_vince_install 05_service_prompt 06_service_macos 07_footer"
-  "windows.sh|00_header 01_detect_windows 02_fetch_release 03_download_and_setup 04_vince_install 05_service_prompt 06_service_windows 07_footer"
+  "linux.sh|00_header 01_detect_linux 02_fetch_release 03_download_and_setup 05_service_prompt 06_service_linux 07_footer"
+  "macos.sh|00_header 01_detect_macos 02_fetch_release 03_download_and_setup 05_service_prompt 06_service_macos 07_footer"
+  "windows.sh|00_header 01_detect_windows 02_fetch_release 03_download_and_setup 05_service_prompt 06_service_windows 07_footer"
 )
 
 # ── build loop ─────────────────────────────────────────────────────────────

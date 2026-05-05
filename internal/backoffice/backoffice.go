@@ -22,20 +22,10 @@ import (
 )
 
 // Handler returns an http.Handler for the backoffice UI.
-//
-//   - domainsDir   path to the domains/ directory
-//   - username     Basic Auth username
-//   - password     Basic Auth password
-//   - onReload     called after upload/delete to trigger a Caddy config reload
-//   - urlFor       returns the public URL for a given domain + site name
-//   - vinceURL     public base URL of the Vince analytics instance
-//     (e.g. "https://analytics.example.com" or "http://localhost:8898").
-//     Pass an empty string to disable script injection.
 func Handler(
 	domainsDir, username, password string,
 	onReload func() error,
 	urlFor func(domain, name string) string,
-	vinceURL string,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -45,7 +35,6 @@ func Handler(
 		password:   password,
 		onReload:   onReload,
 		urlFor:     urlFor,
-		vinceURL:   vinceURL,
 	}
 
 	mux.HandleFunc("/", bo.auth(bo.handleIndex))
@@ -61,7 +50,6 @@ type backoffice struct {
 	password   string
 	onReload   func() error
 	urlFor     func(domain, name string) string
-	vinceURL   string // public Vince base URL; empty = injection disabled
 }
 
 // ---------- auth middleware ----------
@@ -202,12 +190,6 @@ func (bo *backoffice) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ---- inject Vince analytics tracking script into all HTML files ----
-	if bo.vinceURL != "" {
-		siteDomain := bo.siteDataDomain(domain, siteName)
-		injectVinceScript(destDir, siteDomain, bo.vinceURL)
-	}
-
 	if bo.onReload != nil {
 		if err := bo.onReload(); err != nil {
 			bo.redirectFlash(w, r, fmt.Sprintf("Site uploaded but reload failed: %v", err), true)
@@ -252,81 +234,6 @@ func (bo *backoffice) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bo.redirectFlash(w, r, fmt.Sprintf("🗑️  Site \"%s\" deleted from %s", siteName, domain), false)
-}
-
-// ---------- Vince script injection ------------------------------------------
-
-// siteDataDomain returns the value to use as the Vince data-domain attribute
-// for the given domain + site name.
-//
-//   - "root" maps to the apex domain (e.g. "example.com")
-//   - others map to subdomain (e.g. "blog.example.com")
-func (bo *backoffice) siteDataDomain(domain, siteName string) string {
-	if domain == "" {
-		return siteName
-	}
-	if siteName == "root" {
-		return domain
-	}
-	return siteName + "." + domain
-}
-
-// injectVinceScript walks destDir and injects the Vince tracking <script> tag
-// into the <head> of every .html / .htm file.  It is idempotent: files that
-// already contain a snippet for the same domain are skipped.
-func injectVinceScript(destDir, domain, vinceURL string) {
-	snippet := fmt.Sprintf(
-		`<script defer data-domain="%s" src="%s/js/script.js"></script>`,
-		domain, vinceURL,
-	)
-	marker := `data-domain="` + domain + `"`
-
-	_ = filepath.Walk(destDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-		lower := strings.ToLower(info.Name())
-		if !strings.HasSuffix(lower, ".html") && !strings.HasSuffix(lower, ".htm") {
-			return nil
-		}
-
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-
-		// Idempotency check — don't inject twice.
-		if bytes.Contains(data, []byte(marker)) {
-			return nil
-		}
-
-		// Try to inject before </head>, then before </body>, then just append.
-		injected := injectBeforeTag(data, "</head>", snippet)
-		if injected == nil {
-			injected = injectBeforeTag(data, "</body>", snippet)
-		}
-		if injected == nil {
-			injected = append(data, []byte("\n"+snippet+"\n")...)
-		}
-
-		_ = os.WriteFile(path, injected, info.Mode())
-		return nil
-	})
-}
-
-// injectBeforeTag inserts snippet on its own line immediately before the first
-// occurrence of tag (case-insensitive).  Returns nil if tag is not found.
-func injectBeforeTag(data []byte, tag, snippet string) []byte {
-	lower := bytes.ToLower(data)
-	idx := bytes.Index(lower, []byte(strings.ToLower(tag)))
-	if idx < 0 {
-		return nil
-	}
-	out := make([]byte, 0, len(data)+len(snippet)+2)
-	out = append(out, data[:idx]...)
-	out = append(out, []byte("\n"+snippet+"\n")...)
-	out = append(out, data[idx:]...)
-	return out
 }
 
 // ---------- helpers ----------

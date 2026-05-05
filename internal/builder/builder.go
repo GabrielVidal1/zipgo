@@ -28,22 +28,11 @@ func IsLocalhost(domains []string) bool { return len(domains) == 0 }
 // BackofficeHost returns the hostname used for the backoffice in domain mode.
 func BackofficeHost(rootDomain string) string { return "backoffice." + rootDomain }
 
-// VinceHost returns the hostname used for the Vince analytics UI in domain mode.
-func VinceHost(rootDomain string) string { return "analytics." + rootDomain }
-
 // LocalhostStartPort is the single port used for all sites in localhost mode.
 const LocalhostStartPort = 9000
 
 // BackofficeLocalhostPort is the backoffice port in localhost mode.
 const BackofficeLocalhostPort = LocalhostStartPort - 1
-
-// vinceInternalAddr is the loopback address where the Vince sidecar listens.
-// This is fixed and shared between main.go (subprocess) and builder (proxy config).
-const vinceInternalAddr = "127.0.0.1:8899"
-
-// vinceLocalhostProxyPort is the localhost port Caddy listens on in localhost
-// mode and proxies to the internal Vince address.
-const vinceLocalhostProxyPort = 8898
 
 // landingDir is where the auto-generated landing page is written.
 const landingDir = "/tmp/zipgo-landing"
@@ -139,11 +128,10 @@ func BuildConfig(domainSites []DomainSites, backofficeAddr string) (*caddy.Confi
 func domainRoutes(domainSites []DomainSites, backofficeAddr string) (string, error) {
 	var parts []string
 
-	// Collect backoffice and vince hosts across all domains.
-	var boHosts, vinceHosts []string
+	// Collect backoffice hosts across all domains.
+	var boHosts []string
 	for _, ds := range domainSites {
 		boHosts = append(boHosts, BackofficeHost(ds.Domain))
-		vinceHosts = append(vinceHosts, VinceHost(ds.Domain))
 	}
 	boHostsJSON, _ := json.Marshal(boHosts)
 	boAddrJSON, _ := json.Marshal(backofficeAddr)
@@ -162,14 +150,6 @@ func domainRoutes(domainSites []DomainSites, backofficeAddr string) (string, err
 		"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
 		"terminal": true
 	}`, boHostsJSON, boAddrJSON))
-
-	vinceHostsJSON, _ := json.Marshal(vinceHosts)
-	vinceAddrJSON, _ := json.Marshal(vinceInternalAddr)
-	parts = append(parts, fmt.Sprintf(`{
-		"match": [{"host": %s}],
-		"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
-		"terminal": true
-	}`, vinceHostsJSON, vinceAddrJSON))
 
 	for _, ds := range domainSites {
 		for _, s := range ds.Sites {
@@ -268,7 +248,6 @@ func BuildLocalhostConfig(domainSites []DomainSites, backofficeAddr string) (*ca
 
 	routesJSON := "[" + strings.Join(routes, ",") + "]"
 	boAddr, _ := json.Marshal(backofficeAddr)
-	vinceAddr, _ := json.Marshal(vinceInternalAddr)
 
 	raw := fmt.Sprintf(`{
 		"logging": {
@@ -287,16 +266,12 @@ func BuildLocalhostConfig(domainSites []DomainSites, backofficeAddr string) (*ca
 					"backoffice": {
 						"listen": ["127.0.0.1:%d"],
 						"routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}]}]
-					},
-					"vince": {
-						"listen": ["127.0.0.1:%d"],
-						"routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}]}]
 					}
 				}
 			},
 			"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}
 		}
-	}`, LocalhostStartPort, routesJSON, BackofficeLocalhostPort, boAddr, vinceLocalhostProxyPort, vinceAddr)
+	}`, LocalhostStartPort, routesJSON, BackofficeLocalhostPort, boAddr)
 
 	return unmarshal(raw)
 }
