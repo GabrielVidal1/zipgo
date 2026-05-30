@@ -15,14 +15,14 @@ build: build-install-scripts
 	@if [ "$$(uname)" = "Darwin" ]; then codesign --force --sign - $(BINARY); fi
 
 run: build
-	ZIPGO_PASS=$${ZIPGO_PASS:-dev} sudo -E ./$(BINARY) $(DOMAINS_DIR)
+	sudo -E ./$(BINARY) $(DOMAINS_DIR)
 
 run-local: build
-	ZIPGO_PASS=$${ZIPGO_PASS:-dev} ZIPGO_LOCALHOST=1 ./$(BINARY) $(DOMAINS_DIR)
+	ZIPGO_LOCALHOST=1 ./$(BINARY) $(DOMAINS_DIR)
 
 run-prod: build
 	sudo setcap 'cap_net_bind_service=+ep' $(BINARY)
-	ZIPGO_PASS=$${ZIPGO_PASS:-dev} sudo -E ./$(BINARY) $(DOMAINS_DIR) --prod
+	sudo -E ./$(BINARY) $(DOMAINS_DIR) --prod
 
 clean:
 	rm -f $(BINARY)

@@ -17,31 +17,23 @@ make clean          # Remove binary
 make build-install-scripts  # Regenerate apps/install/{linux,macos,windows}.sh from parts
 ```
 
-Run with a custom password:
-```bash
-ZIPGO_PASS=mypass make run-local
-```
-
 ## Architecture
 
 ### Startup flow (`main.go`)
 1. Reads `apps/root.txt` — empty/missing = localhost mode, otherwise = domain mode
-2. Starts the backoffice HTTP server on `127.0.0.1:9876` (loopback only)
-3. Optionally starts Vince analytics as a subprocess (`./vince` binary next to the executable)
-4. Calls `sites.Discover()` + `builder.Build*Config()` to generate a Caddy JSON config in memory
-5. Calls `caddy.Run(cfg)` — no Caddyfile on disk, config is entirely in-memory
-6. On deploy/delete, the backoffice calls `reload()` which re-runs steps 4–5
+2. Calls `sites.Discover()` + `builder.Build*Config()` to generate a Caddy JSON config in memory
+3. Calls `caddy.Run(cfg)` — no Caddyfile on disk, config is entirely in-memory
+4. Watches the domains dir; on filesystem changes it calls `reload()` which re-runs steps 2–3
 
 ### Internal packages
 - **`internal/sites`** — scans `apps/` subdirs; detects SPAs when `index.html` + one of `assets/`, `static/`, `_next/`, `dist/` is present
-- **`internal/builder`** — constructs the Caddy JSON config; `BuildLocalhostConfig` for HTTP-only sequential ports, `BuildConfig` for HTTPS subdomain routing
-- **`internal/backoffice`** — password-protected web UI; handles ZIP/HTML upload, site deletion, calls `onReload()`
+- **`internal/builder`** — constructs the Caddy JSON config; `BuildLocalhostConfig` for HTTP-only path routing, `BuildConfig` for HTTPS subdomain routing
 - **`internal/config`** — reads `apps/root.txt`
 - **`internal/landing`** — generates the auto-index page when no `root/` site exists
 
 ### Site routing
-- **Domain mode**: `<name>.<rootDomain>` → `apps/<name>/`; `backoffice.<rootDomain>` → backoffice UI; `analytics.<rootDomain>` → Vince
-- **Localhost mode**: port `9000` = root/landing, `9001+` = sites in discovery order, `8999` = backoffice, `8898` = Vince
+- **Domain mode**: `<name>.<rootDomain>` → `apps/<name>/`
+- **Localhost mode**: single port `9000` with path routing `/<domain>/<name>`
 
 ### Install scripts
 `apps/install/linux.sh`, `macos.sh`, and `windows.sh` are **generated files** — do not edit them directly. Edit the parts in `scripts/parts/` and regenerate with `make build-install-scripts` (or `make build`).
@@ -55,7 +47,6 @@ Contains both the zipgo website itself (served at `zipgo.xyz`) and each subdirec
 
 ## Environment Variables
 
-| Variable     | Default        | Description         |
-|--------------|----------------|---------------------|
-| `ZIPGO_USER` | `admin`        | Backoffice username |
-| `ZIPGO_PASS` | _(auto-gen)_   | Backoffice password |
+| Variable          | Default | Description                                        |
+|-------------------|---------|----------------------------------------------------|
+| `ZIPGO_LOCALHOST` | _(off)_ | Set to `1` to force localhost mode (single port)   |

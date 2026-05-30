@@ -2,12 +2,10 @@ package service
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"text/template"
-	"time"
 )
 
 const unitName = "zipgo.service"
@@ -89,16 +87,6 @@ func Disable() error {
 func Status() error {
 	fmt.Println("── systemd unit ─────────────────────────────")
 	_ = run("systemctl", "--user", "status", "--no-pager", "zipgo")
-
-	fmt.Println("\n── server reachability ──────────────────────")
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:9876/healthz")
-	if err != nil {
-		fmt.Printf("   backoffice: unreachable (%v)\n", err)
-	} else {
-		resp.Body.Close()
-		fmt.Printf("   backoffice: reachable (HTTP %d)\n", resp.StatusCode)
-	}
 	return nil
 }
 

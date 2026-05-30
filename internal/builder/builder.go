@@ -3,8 +3,6 @@ package builder
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -25,45 +23,17 @@ type DomainSites struct {
 // IsLocalhost reports whether we are in localhost mode (no domains configured).
 func IsLocalhost(domains []string) bool { return len(domains) == 0 }
 
-// BackofficeHost returns the hostname used for the backoffice in domain mode.
-func BackofficeHost(rootDomain string) string { return "backoffice." + rootDomain }
-
 // LocalhostStartPort is the single port used for all sites in localhost mode.
 const LocalhostStartPort = 9000
 
-// BackofficeLocalhostPort is the backoffice port in localhost mode.
-const BackofficeLocalhostPort = LocalhostStartPort - 1
-
 // landingDir is where the auto-generated landing page is written.
 const landingDir = "/tmp/zipgo-landing"
-
-// backofficeAllowedIPsEnv is the env var for comma-separated CIDRs allowed to
-// reach the backoffice. When unset every IP is allowed (backwards-compatible).
-// Example: ZIPGO_BO_ALLOW=203.0.113.42/32,192.168.1.0/24
-const backofficeAllowedIPsEnv = "ZIPGO_BO_ALLOW"
-
-// allowedBackofficeRanges reads ZIPGO_BO_ALLOW and returns a slice of CIDR
-// strings. Returns nil when the variable is unset or empty (= allow all).
-func allowedBackofficeRanges() []string {
-	raw := strings.TrimSpace(os.Getenv(backofficeAllowedIPsEnv))
-	if raw == "" {
-		return nil
-	}
-	var ranges []string
-	for _, r := range strings.Split(raw, ",") {
-		r = strings.TrimSpace(r)
-		if r != "" {
-			ranges = append(ranges, r)
-		}
-	}
-	return ranges
-}
 
 // ---- domain mode -----------------------------------------------------------
 
 // BuildConfig serves every site on its subdomain over HTTPS (Let's Encrypt).
 // It supports multiple domains simultaneously.
-func BuildConfig(domainSites []DomainSites, backofficeAddr string) (*caddy.Config, error) {
+func BuildConfig(domainSites []DomainSites) (*caddy.Config, error) {
 	for i := range domainSites {
 		ds := &domainSites[i]
 		domainLandingDir := landingDir + "-" + ds.Domain
@@ -77,7 +47,7 @@ func BuildConfig(domainSites []DomainSites, backofficeAddr string) (*caddy.Confi
 		}, domainLandingDir)
 	}
 
-	routesJSON, err := domainRoutes(domainSites, backofficeAddr)
+	routesJSON, err := domainRoutes(domainSites)
 	if err != nil {
 		return nil, err
 	}
@@ -125,31 +95,8 @@ func BuildConfig(domainSites []DomainSites, backofficeAddr string) (*caddy.Confi
 	return unmarshal(raw)
 }
 
-func domainRoutes(domainSites []DomainSites, backofficeAddr string) (string, error) {
+func domainRoutes(domainSites []DomainSites) (string, error) {
 	var parts []string
-
-	// Collect backoffice hosts across all domains.
-	var boHosts []string
-	for _, ds := range domainSites {
-		boHosts = append(boHosts, BackofficeHost(ds.Domain))
-	}
-	boHostsJSON, _ := json.Marshal(boHosts)
-	boAddrJSON, _ := json.Marshal(backofficeAddr)
-
-	allowedRanges := allowedBackofficeRanges()
-	if len(allowedRanges) > 0 {
-		allowJSON, _ := json.Marshal(allowedRanges)
-		parts = append(parts, fmt.Sprintf(`{
-			"match": [{"host": %s, "not": [{"remote_ip": {"ranges": %s}}]}],
-			"handle": [{"handler": "static_response", "status_code": "403", "body": "Forbidden"}],
-			"terminal": true
-		}`, boHostsJSON, allowJSON))
-	}
-	parts = append(parts, fmt.Sprintf(`{
-		"match": [{"host": %s}],
-		"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}],
-		"terminal": true
-	}`, boHostsJSON, boAddrJSON))
 
 	for _, ds := range domainSites {
 		for _, s := range ds.Sites {
@@ -194,8 +141,7 @@ func domainRouteJSON(s sites.Site, rootDomain string) (string, error) {
 // BuildLocalhostConfig serves all sites on a single port (9000) using path
 // routing: localhost:9000/<domain>/<subdomain>.
 // The "root" subdomain maps to localhost:9000/<domain> (no extra segment).
-// Port 8999 is the backoffice; port 8898 proxies to Vince.
-func BuildLocalhostConfig(domainSites []DomainSites, backofficeAddr string) (*caddy.Config, error) {
+func BuildLocalhostConfig(domainSites []DomainSites) (*caddy.Config, error) {
 	// Inject landing per domain with path-based URLs.
 	for i := range domainSites {
 		ds := &domainSites[i]
@@ -247,7 +193,6 @@ func BuildLocalhostConfig(domainSites []DomainSites, backofficeAddr string) (*ca
 	}
 
 	routesJSON := "[" + strings.Join(routes, ",") + "]"
-	boAddr, _ := json.Marshal(backofficeAddr)
 
 	raw := fmt.Sprintf(`{
 		"logging": {
@@ -262,16 +207,12 @@ func BuildLocalhostConfig(domainSites []DomainSites, backofficeAddr string) (*ca
 					"sites": {
 						"listen": ["127.0.0.1:%d"],
 						"routes": %s
-					},
-					"backoffice": {
-						"listen": ["127.0.0.1:%d"],
-						"routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": %s}]}]}]
 					}
 				}
 			},
 			"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}
 		}
-	}`, LocalhostStartPort, routesJSON, BackofficeLocalhostPort, boAddr)
+	}`, LocalhostStartPort, routesJSON)
 
 	return unmarshal(raw)
 }
@@ -412,6 +353,3 @@ func unmarshal(raw string) (*caddy.Config, error) {
 	}
 	return &cfg, nil
 }
-
-// Unused — satisfies go vet
-var _ = http.StatusForbidden

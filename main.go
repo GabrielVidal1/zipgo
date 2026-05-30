@@ -2,13 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,22 +13,19 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
-	"github.com/fsnotify/fsnotify"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/fileserver"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/rewrite"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls/standardstek"
+	"github.com/fsnotify/fsnotify"
 
-	"zipgo/internal/backoffice"
 	"zipgo/internal/builder"
 	"zipgo/internal/config"
 	"zipgo/internal/service"
 	"zipgo/internal/sites"
 )
-
-const backofficeInternalPort = "9876"
 
 func main() {
 	sub := ""
@@ -63,7 +56,7 @@ func main() {
 		fmt.Println("  serve    Start the server (default)")
 		fmt.Println("  enable   Install and start the systemd user service")
 		fmt.Println("  disable  Stop and remove the systemd user service")
-		fmt.Println("  status   Show service status and server reachability")
+		fmt.Println("  status   Show service status")
 		return
 	case "serve", "":
 		// fall through to server startup
@@ -88,19 +81,6 @@ func main() {
 	// domain folders — serves on a single port with path routing).
 	isLocalhost := len(domains) == 0 || os.Getenv("ZIPGO_LOCALHOST") == "1"
 
-	// ---- credentials ----
-	boUser := envOr("ZIPGO_USER", "admin")
-	boPass := envOr("ZIPGO_PASS", "")
-	if boPass == "" {
-		boPass, err = generatePassword(16)
-		if err != nil {
-			log.Fatalf("❌  Could not generate admin password: %v\n", err)
-		}
-		fmt.Printf("🔑  Generated admin password: %s\n    (set ZIPGO_PASS to set it instead)\n\n", boPass)
-	}
-
-	backofficeAddr := "127.0.0.1:" + backofficeInternalPort
-
 	// ---- discoverAll: build []DomainSites for all configured domains ----
 	discoverAll := func() ([]builder.DomainSites, error) {
 		var result []builder.DomainSites
@@ -122,41 +102,15 @@ func main() {
 		}
 		var cfg *caddy.Config
 		if isLocalhost {
-			cfg, err = builder.BuildLocalhostConfig(domainSites, backofficeAddr)
+			cfg, err = builder.BuildLocalhostConfig(domainSites)
 		} else {
-			cfg, err = builder.BuildConfig(domainSites, backofficeAddr)
+			cfg, err = builder.BuildConfig(domainSites)
 		}
 		if err != nil {
 			return err
 		}
 		return caddy.Run(cfg)
 	}
-
-	// ---- urlFor: compute public URL for a site name on demand ----
-	urlFor := func(domain, name string) string {
-		if isLocalhost {
-			prefix := fmt.Sprintf("http://localhost:%d/%s", builder.LocalhostStartPort, domain)
-			if name != "root" {
-				prefix += "/" + name
-			}
-			return prefix
-		}
-		s := sites.Site{Name: name}
-		return "https://" + s.Host(domain)
-	}
-
-	// ---- start backoffice HTTP server on loopback ----
-	boHandler := backoffice.Handler(domainsDir, boUser, boPass, reload, urlFor)
-	boListener, err := net.Listen("tcp", backofficeAddr)
-	if err != nil {
-		log.Fatalf("❌  Could not bind internal port %s: %v\n", backofficeInternalPort, err)
-	}
-	boServer := &http.Server{Handler: boHandler}
-	go func() {
-		if err := boServer.Serve(boListener); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌  Backoffice server error: %v\n", err)
-		}
-	}()
 
 	// ---- discover sites and build config ----
 	domainSites, err := discoverAll()
@@ -186,9 +140,8 @@ func main() {
 				fmt.Printf("   [%s]  http://localhost:%d%s\n", kind, builder.LocalhostStartPort, path)
 			}
 		}
-		fmt.Printf("   [ui    ]  http://localhost:%d  →  backoffice\n", builder.BackofficeLocalhostPort)
 		fmt.Println()
-		cfg, err = builder.BuildLocalhostConfig(domainSites, backofficeAddr)
+		cfg, err = builder.BuildLocalhostConfig(domainSites)
 	} else {
 		for _, ds := range domainSites {
 			fmt.Printf("🌐  Domain : %s (%d sites)\n", ds.Domain, len(ds.Sites))
@@ -202,10 +155,9 @@ func main() {
 				}
 				fmt.Printf("   [%s]  https://%s\n", kind, s.Host(ds.Domain))
 			}
-			fmt.Printf("   [ui    ]  https://%s  (backoffice)\n", builder.BackofficeHost(ds.Domain))
 		}
 		fmt.Println()
-		cfg, err = builder.BuildConfig(domainSites, backofficeAddr)
+		cfg, err = builder.BuildConfig(domainSites)
 	}
 	if err != nil {
 		log.Fatalf("❌  Could not build config: %v\n", err)
@@ -231,7 +183,6 @@ func main() {
 	<-ctx.Done()
 
 	fmt.Println("\n🛑  Shutting down...")
-	boServer.Shutdown(context.Background())
 	caddy.Stop()
 }
 
@@ -292,21 +243,4 @@ func watchAndReload(domainsDir string, reload func() error) {
 			}
 		}
 	}()
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-// generatePassword returns a cryptographically random URL-safe password of the
-// requested byte length (the base64 output will be slightly longer).
-func generatePassword(byteLen int) (string, error) {
-	b := make([]byte, byteLen)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
 }
