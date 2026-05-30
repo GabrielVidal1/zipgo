@@ -37,6 +37,7 @@ func Handler(
 		urlFor:     urlFor,
 	}
 
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/", bo.auth(bo.handleIndex))
 	mux.HandleFunc("/upload", bo.auth(bo.handleUpload))
 	mux.HandleFunc("/delete", bo.auth(bo.handleDelete))

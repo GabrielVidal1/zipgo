@@ -4,3 +4,5 @@ go.sum
 vince-data
 vince
 .mcp.json
+
+.env

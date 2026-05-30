@@ -28,16 +28,54 @@ import (
 	"zipgo/internal/backoffice"
 	"zipgo/internal/builder"
 	"zipgo/internal/config"
+	"zipgo/internal/service"
 	"zipgo/internal/sites"
 )
 
 const backofficeInternalPort = "9876"
 
 func main() {
-	domainsDir := "domains"
+	sub := ""
 	if len(os.Args) > 1 {
-		domainsDir = os.Args[1]
+		sub = os.Args[1]
 	}
+
+	switch sub {
+	case "enable":
+		if err := service.Enable(); err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		return
+	case "disable":
+		if err := service.Disable(); err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		return
+	case "status":
+		if err := service.Status(); err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		return
+	case "help", "--help", "-h":
+		fmt.Println("Usage: zipgo [command]")
+		fmt.Println()
+		fmt.Println("Commands:")
+		fmt.Println("  serve    Start the server (default)")
+		fmt.Println("  enable   Install and start the systemd user service")
+		fmt.Println("  disable  Stop and remove the systemd user service")
+		fmt.Println("  status   Show service status and server reachability")
+		return
+	case "serve", "":
+		// fall through to server startup
+	default:
+		log.Fatalf("❌  Unknown command %q. Run 'zipgo help' for usage.\n", sub)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("❌  cannot determine home directory: %v\n", err)
+	}
+	domainsDir := filepath.Join(home, ".zipgo")
 
 	// ---- discover domains ----
 	domains, err := config.ReadDomains(domainsDir)
