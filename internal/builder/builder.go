@@ -4,12 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"zipgo/internal/landing"
 	"zipgo/internal/sites"
 
 	"github.com/caddyserver/caddy/v2"
+)
+
+// obj and arr are shorthand for the untyped JSON shapes we assemble before
+// marshalling the whole config in one pass.
+type (
+	obj = map[string]any
+	arr = []any
 )
 
 // ---- public helpers --------------------------------------------------------
@@ -47,93 +53,74 @@ func BuildConfig(domainSites []DomainSites) (*caddy.Config, error) {
 		}, domainLandingDir)
 	}
 
-	routesJSON, err := domainRoutes(domainSites)
-	if err != nil {
-		return nil, err
+	routes := arr{}
+	for _, ds := range domainSites {
+		for _, s := range ds.Sites {
+			r, err := domainRoute(s, ds.Domain)
+			if err != nil {
+				return nil, fmt.Errorf("domain %s site %s: %w", ds.Domain, s.Name, err)
+			}
+			routes = append(routes, r)
+		}
 	}
 
 	// TLS subjects for all configured domains and their wildcards.
 	// Also add *.parent.domain for each top-level subdomain that has sub-subdomains.
-	var allSubjects []string
+	var subjects []string
 	for _, ds := range domainSites {
-		allSubjects = append(allSubjects, ds.Domain, "*."+ds.Domain)
+		subjects = append(subjects, ds.Domain, "*."+ds.Domain)
 		seen := map[string]bool{}
 		for _, s := range ds.Sites {
 			if s.Parent != "" && !seen[s.Parent] {
 				seen[s.Parent] = true
-				allSubjects = append(allSubjects, "*."+s.Parent+"."+ds.Domain)
+				subjects = append(subjects, "*."+s.Parent+"."+ds.Domain)
 			}
 		}
 	}
-	subjects, _ := json.Marshal(allSubjects)
 
-	raw := fmt.Sprintf(`{
-		"logging": {
-			"logs": {
-				"default": {"level": "ERROR"}
-			}
+	cfg := obj{
+		"logging": obj{"logs": obj{"default": obj{"level": "ERROR"}}},
+		"admin":   obj{"disabled": true},
+		"apps": obj{
+			"http": obj{"servers": obj{
+				"https": obj{
+					"listen": arr{":443"},
+					"routes": routes,
+				},
+				"http_redirect": obj{
+					"listen": arr{":80"},
+					"routes": arr{obj{"handle": arr{obj{
+						"handler":     "static_response",
+						"status_code": "301",
+						"headers":     obj{"Location": arr{"https://{http.request.host}{http.request.uri}"}},
+					}}}},
+				},
+			}},
+			"tls": obj{"automation": obj{"policies": arr{obj{"subjects": subjects}}}},
 		},
-		"admin": {"disabled": true},
-		"apps": {
-			"http": {
-				"servers": {
-					"https": {
-						"listen": [":443"],
-						"routes": %s
-					},
-					"http_redirect": {
-						"listen": [":80"],
-						"routes": [{"handle": [{"handler": "static_response", "status_code": "301",
-							"headers": {"Location": ["https://{http.request.host}{http.request.uri}"]}}]}]
-					}
-				}
-			},
-			"tls": {"automation": {"policies": [{"subjects": %s}]}}
-		}
-	}`, routesJSON, subjects)
-
-	return unmarshal(raw)
-}
-
-func domainRoutes(domainSites []DomainSites) (string, error) {
-	var parts []string
-
-	for _, ds := range domainSites {
-		for _, s := range ds.Sites {
-			r, err := domainRouteJSON(s, ds.Domain)
-			if err != nil {
-				return "", fmt.Errorf("domain %s site %s: %w", ds.Domain, s.Name, err)
-			}
-			parts = append(parts, r)
-		}
 	}
-	return "[" + strings.Join(parts, ",") + "]", nil
+
+	return finalize(cfg)
 }
 
-func domainRouteJSON(s sites.Site, rootDomain string) (string, error) {
+func domainRoute(s sites.Site, rootDomain string) (obj, error) {
 	absPath, err := filepath.Abs(s.Path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	root, _ := json.Marshal(absPath)
 
+	var match obj
 	if s.Name == "root" {
-		host, _ := json.Marshal(rootDomain)
-		path, _ := json.Marshal("/")
-		return fmt.Sprintf(`{
-		"match": [{"host": [%s], "path": [%s]}],
-		"handle": [%s],
-		"terminal": true
-	}`, host, path, fileHandler(root, s.IsSPA)), nil
+		match = obj{"host": arr{rootDomain}, "path": arr{"/"}}
+	} else {
+		match = obj{"host": arr{s.Host(rootDomain)}}
 	}
 
-	host, _ := json.Marshal(s.Host(rootDomain))
-
-	return fmt.Sprintf(`{
-		"match": [{"host": [%s]}],
-		"handle": [%s],
-		"terminal": true
-	}`, host, fileHandler(root, s.IsSPA)), nil
+	return obj{
+		"match":    arr{match},
+		"handle":   arr{fileHandler(absPath, s.IsSPA, "")},
+		"terminal": true,
+	}, nil
 }
 
 // ---- localhost mode --------------------------------------------------------
@@ -155,7 +142,7 @@ func BuildLocalhostConfig(domainSites []DomainSites) (*caddy.Config, error) {
 		}, domainLandingDir)
 	}
 
-	var routes []string
+	routes := arr{}
 
 	// Build one route per site. Non-root sites come first (more specific paths)
 	// so they are matched before the root catch-all for each domain.
@@ -180,41 +167,30 @@ func BuildLocalhostConfig(domainSites []DomainSites) (*caddy.Config, error) {
 			if err != nil {
 				return nil, fmt.Errorf("domain %s site %s: %w", ds.Domain, s.Name, err)
 			}
-			rootJSON, _ := json.Marshal(absPath)
-			pathMatchJSON, _ := json.Marshal([]string{pathPrefix, pathPrefix + "/*"})
-			prefixJSON, _ := json.Marshal(pathPrefix)
 
-			routes = append(routes, fmt.Sprintf(`{
-				"match": [{"path": %s}],
-				"handle": [%s],
-				"terminal": true
-			}`, pathMatchJSON, localhostFileHandler(rootJSON, s.IsSPA, prefixJSON)))
+			routes = append(routes, obj{
+				"match":    arr{obj{"path": arr{pathPrefix, pathPrefix + "/*"}}},
+				"handle":   arr{fileHandler(absPath, s.IsSPA, pathPrefix)},
+				"terminal": true,
+			})
 		}
 	}
 
-	routesJSON := "[" + strings.Join(routes, ",") + "]"
-
-	raw := fmt.Sprintf(`{
-		"logging": {
-			"logs": {
-				"default": {"level": "ERROR"}
-			}
+	cfg := obj{
+		"logging": obj{"logs": obj{"default": obj{"level": "ERROR"}}},
+		"admin":   obj{"disabled": true},
+		"apps": obj{
+			"http": obj{"servers": obj{
+				"sites": obj{
+					"listen": arr{fmt.Sprintf("127.0.0.1:%d", LocalhostStartPort)},
+					"routes": routes,
+				},
+			}},
+			"tls": obj{"automation": obj{"policies": arr{obj{"issuers": arr{obj{"module": "internal"}}}}}},
 		},
-		"admin": {"disabled": true},
-		"apps": {
-			"http": {
-				"servers": {
-					"sites": {
-						"listen": ["127.0.0.1:%d"],
-						"routes": %s
-					}
-				}
-			},
-			"tls": {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}
-		}
-	}`, LocalhostStartPort, routesJSON)
+	}
 
-	return unmarshal(raw)
+	return finalize(cfg)
 }
 
 // ---- landing injection -----------------------------------------------------
@@ -242,114 +218,75 @@ func HasRootSite(discovered []sites.Site) bool {
 	return false
 }
 
-// ---- shared file-serving handler JSON --------------------------------------
+// ---- shared file-serving handler -------------------------------------------
 
-// localhostFileHandler wraps fileHandler with a strip_path_prefix rewrite so
-// that sites served under a path prefix (e.g. /domain/name) receive requests
-// as if they were at the root.
-func localhostFileHandler(root json.RawMessage, isSPA bool, pathPrefix json.RawMessage) string {
-	secHeaders := securityHeadersHandler()
-	stripRewrite := fmt.Sprintf(`{"handler": "rewrite", "strip_path_prefix": %s}`, pathPrefix)
+// fileHandler builds the subroute that serves a single site from root.
+// When stripPrefix is non-empty (localhost mode) a strip_path_prefix rewrite is
+// inserted so requests under /domain/name are served as if they were at root.
+// SPA sites fall back to index.html for unmatched paths.
+func fileHandler(root string, isSPA bool, stripPrefix string) obj {
+	routes := arr{obj{"handle": arr{securityHeaders()}}}
+
+	if stripPrefix != "" {
+		routes = append(routes, obj{"handle": arr{obj{
+			"handler":           "rewrite",
+			"strip_path_prefix": stripPrefix,
+		}}})
+	}
 
 	if isSPA {
-		return fmt.Sprintf(`{
-			"handler": "subroute",
-			"routes": [
-				{"handle": [%s]},
-				{"handle": [%s]},
-				{
-					"match": [{"file": {"root": %s, "try_files": ["{http.request.uri.path}", "{http.request.uri.path}/index.html"]}}],
-					"handle": [
-						{"handler": "rewrite", "uri": "{http.matchers.file.relative}"},
-						{"handler": "file_server", "root": %s, "index_names": ["index.html"]}
-					]
+		routes = append(routes,
+			obj{
+				"match": arr{obj{"file": obj{
+					"root":      root,
+					"try_files": arr{"{http.request.uri.path}", "{http.request.uri.path}/index.html"},
+				}}},
+				"handle": arr{
+					obj{"handler": "rewrite", "uri": "{http.matchers.file.relative}"},
+					obj{"handler": "file_server", "root": root, "index_names": arr{"index.html"}},
 				},
-				{
-					"handle": [
-						{"handler": "rewrite", "uri": "/index.html"},
-						{"handler": "file_server", "root": %s}
-					]
-				}
-			]
-		}`, secHeaders, stripRewrite, root, root, root)
-	}
-	return fmt.Sprintf(`{
-		"handler": "subroute",
-		"routes": [
-			{"handle": [%s]},
-			{"handle": [%s]},
-			{"handle": [{"handler": "file_server", "root": %s, "index_names": ["index.html", "index.htm"], "browse": {}}]}
-		]
-	}`, secHeaders, stripRewrite, root)
-}
-
-func securityHeadersHandler() string {
-	return `{
-		"handler": "headers",
-		"response": {
-			"set": {
-				"X-Content-Type-Options":  ["nosniff"],
-				"X-Frame-Options":         ["SAMEORIGIN"],
-				"Referrer-Policy":         ["strict-origin-when-cross-origin"],
-				"X-XSS-Protection":        ["0"],
-				"Permissions-Policy":      ["camera=(), microphone=(), geolocation=(), payment=()"]
-			}
-		}
-	}`
-}
-
-func fileHandler(root json.RawMessage, isSPA bool) string {
-	secHeaders := securityHeadersHandler()
-
-	if isSPA {
-		return fmt.Sprintf(`{
-			"handler": "subroute",
-			"routes": [
-				{
-					"handle": [%s]
-				},
-				{
-					"match": [{"file": {"root": %s, "try_files": ["{http.request.uri.path}", "{http.request.uri.path}/index.html"]}}],
-					"handle": [
-						{"handler": "rewrite", "uri": "{http.matchers.file.relative}"},
-						{"handler": "file_server", "root": %s, "index_names": ["index.html"]}
-					]
-				},
-				{
-					"handle": [
-						{"handler": "rewrite", "uri": "/index.html"},
-						{"handler": "file_server", "root": %s}
-					]
-				}
-			]
-		}`, secHeaders, root, root, root)
-	}
-	return fmt.Sprintf(`{
-		"handler": "subroute",
-		"routes": [
-			{
-				"handle": [%s]
 			},
-			{
-				"handle": [
-					{
-						"handler": "file_server",
-						"root": %s,
-						"index_names": ["index.html", "index.htm"],
-						"browse": {}
-					}
-				]
-			}
-		]
-	}`, secHeaders, root)
+			obj{"handle": arr{
+				obj{"handler": "rewrite", "uri": "/index.html"},
+				obj{"handler": "file_server", "root": root},
+			}},
+		)
+	} else {
+		routes = append(routes, obj{"handle": arr{obj{
+			"handler":     "file_server",
+			"root":        root,
+			"index_names": arr{"index.html", "index.htm"},
+			"browse":      obj{},
+		}}})
+	}
+
+	return obj{"handler": "subroute", "routes": routes}
+}
+
+func securityHeaders() obj {
+	return obj{
+		"handler": "headers",
+		"response": obj{"set": obj{
+			"X-Content-Type-Options": arr{"nosniff"},
+			"X-Frame-Options":        arr{"SAMEORIGIN"},
+			"Referrer-Policy":        arr{"strict-origin-when-cross-origin"},
+			"X-XSS-Protection":       arr{"0"},
+			"Permissions-Policy":     arr{"camera=(), microphone=(), geolocation=(), payment=()"},
+		}},
+	}
 }
 
 // ---- helpers ---------------------------------------------------------------
 
-func unmarshal(raw string) (*caddy.Config, error) {
-	var cfg caddy.Config
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+// finalize marshals the assembled config and unmarshals it into caddy.Config.
+func finalize(cfg any) (*caddy.Config, error) {
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal caddy config: %w", err)
+	}
+	var c caddy.Config
+	if err := json.Unmarshal(raw, &c); err != nil {
 		return nil, fmt.Errorf("caddy config error: %w\n\nJSON was:\n%s", err, raw)
 	}
-	return &cfg, nil
+	return &c, nil
 }
