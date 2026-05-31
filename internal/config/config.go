@@ -25,7 +25,8 @@ func ReadDomains(domainsDir string) ([]string, error) {
 		}
 		name := e.Name()
 		if !strings.Contains(name, ".") {
-			return nil, fmt.Errorf("domain folder %q looks invalid (must contain a dot)", name)
+			// malformed domain folder (no dot) — ignore it
+			continue
 		}
 		domains = append(domains, name)
 	}

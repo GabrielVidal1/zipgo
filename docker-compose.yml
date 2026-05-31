@@ -1,0 +1,15 @@
+services:
+  zipgo:
+    build: .
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Your sites: one folder per domain (e.g. ./domains/example.com/)
+      - ./domains:/domains
+      # Persist Let's Encrypt certificates across restarts
+      - zipgo-data:/root/.local/share/caddy
+    restart: unless-stopped
+
+volumes:
+  zipgo-data:

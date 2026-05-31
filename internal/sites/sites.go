@@ -8,62 +8,81 @@ import (
 )
 
 type Site struct {
-	Name   string // subdomain segment ("root" → apex domain)
-	Parent string // parent subdomain; empty for top-level sites
+	// Labels is the subdomain label chain, leaf-first. Empty means the apex
+	// domain. e.g. ["api", "docs"] → api.docs.<rootDomain>. A single label may
+	// itself contain dots (folder "foo.bar." → label "foo.bar").
+	Labels []string
 	Path   string
 	IsSPA  bool
 }
 
+// IsApex reports whether this site is served at the bare domain.
+func (s Site) IsApex() bool { return len(s.Labels) == 0 }
+
+// Host returns the fully-qualified host for this site under rootDomain.
 func (s Site) Host(rootDomain string) string {
-	if s.Name == "root" && s.Parent == "" {
+	if len(s.Labels) == 0 {
 		return rootDomain
 	}
-	if s.Parent != "" {
-		return s.Name + "." + s.Parent + "." + rootDomain
-	}
-	return s.Name + "." + rootDomain
+	return strings.Join(s.Labels, ".") + "." + rootDomain
 }
 
-func Discover(appsDir string) ([]Site, error) {
-	entries, err := os.ReadDir(appsDir)
-	if err != nil {
+// LocalhostPath returns the path prefix used in localhost mode, parent-first:
+// /<domain>/<outer>/.../<leaf>. The apex maps to /<domain>.
+func (s Site) LocalhostPath(domain string) string {
+	p := "/" + domain
+	for i := len(s.Labels) - 1; i >= 0; i-- {
+		p += "/" + s.Labels[i]
+	}
+	return p
+}
+
+// Discover walks a single domain directory. The directory root itself is the
+// apex site; any subdirectory whose name ends in a dot is a subdomain whose
+// label is the name with the trailing dot trimmed. This applies recursively, so
+// docs./api./ becomes api.docs.<rootDomain>.
+func Discover(domainDir string) ([]Site, error) {
+	if _, err := os.Stat(domainDir); err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("apps directory %q not found", appsDir)
+			return nil, fmt.Errorf("domain directory %q not found", domainDir)
 		}
-		return nil, fmt.Errorf("reading %s: %w", appsDir, err)
+		return nil, fmt.Errorf("reading %s: %w", domainDir, err)
 	}
 
 	var result []Site
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		path := filepath.Join(appsDir, e.Name())
+	var walk func(dir string, labels []string) error
+	walk = func(dir string, labels []string) error {
 		result = append(result, Site{
-			Name:  e.Name(),
-			Path:  path,
-			IsSPA: detectSPA(path),
+			Labels: append([]string{}, labels...),
+			Path:   dir,
+			IsSPA:  detectSPA(dir),
 		})
 
-		// Dot-prefixed subdirs inside a site become sub-subdomains.
-		// e.g. apps/foo/.bar/ → bar.foo.<rootDomain>
-		subEntries, _ := os.ReadDir(path)
-		for _, se := range subEntries {
-			if !se.IsDir() || !strings.HasPrefix(se.Name(), ".") {
-				continue
-			}
-			subName := strings.TrimPrefix(se.Name(), ".")
-			if subName == "" {
-				continue
-			}
-			subPath := filepath.Join(path, se.Name())
-			result = append(result, Site{
-				Name:   subName,
-				Parent: e.Name(),
-				Path:   subPath,
-				IsSPA:  detectSPA(subPath),
-			})
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", dir, err)
 		}
+		for _, e := range entries {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			if !strings.HasSuffix(e.Name(), ".") {
+				continue
+			}
+			label := strings.TrimSuffix(e.Name(), ".")
+			if label == "" {
+				continue
+			}
+			child := filepath.Join(dir, e.Name())
+			if err := walk(child, append([]string{label}, labels...)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := walk(domainDir, nil); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

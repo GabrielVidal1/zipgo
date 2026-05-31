@@ -1,7 +1,7 @@
 BINARY      := zipgo
 DOMAINS_DIR := $(abspath domains)
 
-.PHONY: build run run-local clean format
+.PHONY: build run run-local run-prod clean format build-install-scripts
 
 format:
 	gofmt -w .
@@ -15,14 +15,14 @@ build: build-install-scripts
 	@if [ "$$(uname)" = "Darwin" ]; then codesign --force --sign - $(BINARY); fi
 
 run: build
-	sudo -E ./$(BINARY) $(DOMAINS_DIR)
+	ZIPGO_DOMAINS_FOLDER=$(DOMAINS_DIR) sudo -E ./$(BINARY) serve
 
 run-local: build
-	ZIPGO_LOCALHOST=1 ./$(BINARY) $(DOMAINS_DIR)
+	ZIPGO_DOMAINS_FOLDER=$(DOMAINS_DIR) ZIPGO_LOCALHOST=1 ./$(BINARY) serve
 
 run-prod: build
 	sudo setcap 'cap_net_bind_service=+ep' $(BINARY)
-	sudo -E ./$(BINARY) $(DOMAINS_DIR) --prod
+	ZIPGO_DOMAINS_FOLDER=$(DOMAINS_DIR) ./$(BINARY) serve
 
 clean:
 	rm -f $(BINARY)

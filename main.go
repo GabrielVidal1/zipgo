@@ -64,11 +64,10 @@ func main() {
 		log.Fatalf("❌  Unknown command %q. Run 'zipgo help' for usage.\n", sub)
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatalf("❌  cannot determine home directory: %v\n", err)
+	domainsDir := os.Getenv("ZIPGO_DOMAINS_FOLDER")
+	if domainsDir == "" {
+		domainsDir = ".zipgo"
 	}
-	domainsDir := filepath.Join(home, ".zipgo")
 
 	// ---- discover domains ----
 	domains, err := config.ReadDomains(domainsDir)
@@ -129,15 +128,11 @@ func main() {
 		fmt.Printf("📁  Domains: %d  Sites: %d\n\n", len(domainSites), totalSites)
 		for _, ds := range domainSites {
 			for _, s := range ds.Sites {
-				path := "/" + ds.Domain
-				if s.Name != "root" {
-					path += "/" + s.Name
-				}
 				kind := "static"
 				if s.IsSPA {
 					kind = "spa   "
 				}
-				fmt.Printf("   [%s]  http://localhost:%d%s\n", kind, builder.LocalhostStartPort, path)
+				fmt.Printf("   [%s]  http://localhost:%d%s\n", kind, builder.LocalhostStartPort, s.LocalhostPath(ds.Domain))
 			}
 		}
 		fmt.Println()
@@ -145,9 +140,6 @@ func main() {
 	} else {
 		for _, ds := range domainSites {
 			fmt.Printf("🌐  Domain : %s (%d sites)\n", ds.Domain, len(ds.Sites))
-			if !builder.HasRootSite(ds.Sites) {
-				fmt.Printf("   [land  ]  https://%s  →  (landing page)\n", ds.Domain)
-			}
 			for _, s := range ds.Sites {
 				kind := "static"
 				if s.IsSPA {
