@@ -7,7 +7,7 @@ format:
 	gofmt -w .
 
 build-install-scripts:
-	bash scripts/populate_script.sh domains/zipgo.xyz/install
+	bash scripts/populate_script.sh domains/zipgo.xyz/install.
 
 build: build-install-scripts
 	go mod tidy
