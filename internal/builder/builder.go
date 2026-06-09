@@ -3,6 +3,7 @@ package builder
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 
@@ -41,10 +42,20 @@ func dotHide() []string {
 
 // ---- domain mode -----------------------------------------------------------
 
+// hasIndex reports whether the site directory contains an index.html. Sites
+// without one are skipped entirely (no route, no TLS subject) rather than
+// served as a directory listing.
+func hasIndex(s sites.Site) bool {
+	if _, err := os.Stat(filepath.Join(s.Path, "index.html")); err == nil {
+		return true
+	}
+	return false
+}
+
 // hasWww reports whether the domain has a www subdomain site.
 func hasWww(all []sites.Site) bool {
 	for _, s := range all {
-		if len(s.Labels) == 1 && s.Labels[0] == "www" {
+		if len(s.Labels) == 1 && s.Labels[0] == "www" && hasIndex(s) {
 			return true
 		}
 	}
@@ -72,6 +83,9 @@ func BuildConfig(domainSites []DomainSites) (*caddy.Config, error) {
 		}
 
 		for _, s := range ds.Sites {
+			if !hasIndex(s) {
+				continue
+			}
 			r, err := domainRoute(s, ds.Domain, hide)
 			if err != nil {
 				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
@@ -106,8 +120,8 @@ func BuildConfig(domainSites []DomainSites) (*caddy.Config, error) {
 				"issuers": arr{obj{
 					"module": "acme",
 					"challenges": obj{
-						"http": obj{"disabled": false},
-						"tls":  obj{"disabled": true},
+						"http": 		obj{"disabled": false},
+						"tls-alpn":	obj{"disabled": true},
 					},
 				}},
 			}}}},
@@ -168,6 +182,9 @@ func BuildLocalhostConfig(domainSites []DomainSites) (*caddy.Config, error) {
 		}
 
 		for _, s := range sorted {
+			if !hasIndex(s) {
+				continue
+			}
 			pathPrefix := s.LocalhostPath(ds.Domain)
 
 			absPath, err := filepath.Abs(s.Path)
