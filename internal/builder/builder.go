@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"zipgo/internal/sites"
 
@@ -68,11 +69,20 @@ func withMetrics(servers obj, addr string) {
 	}
 }
 
-// dotHide returns the file_server hide patterns that prevent dot-suffixed
-// subdomain folders from being served or listed. Every route should hide
-// these, not just the apex, because subdomain folders can appear at any level.
-func dotHide() []string {
-	return []string{"*."}
+// dotHide returns absolute paths to all dot-suffixed entries (subdomain
+// directories) directly inside dir, so Caddy hides them via a prefix match on
+// the absolute path rather than matching every path component. A bare "*."
+// glob would match every served file, since each site's own root directory
+// ends in a dot — hiding everything and returning 404 for all requests.
+func dotHide(dir string) []string {
+	entries, _ := os.ReadDir(dir)
+	var paths []string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasSuffix(e.Name(), ".") {
+			paths = append(paths, filepath.Join(dir, e.Name()))
+		}
+	}
+	return paths
 }
 
 // ---- domain mode -----------------------------------------------------------
@@ -106,7 +116,6 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 	var subjects []string
 
 	for _, ds := range domainSites {
-		hide := dotHide()
 		www := hasWww(ds.Sites)
 		subjects = append(subjects, ds.Domain)
 
@@ -123,7 +132,7 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 			if !hasIndex(s) {
 				continue
 			}
-			r, err := domainRoute(s, ds.Domain, hide)
+			r, err := domainRoute(s, ds.Domain)
 			if err != nil {
 				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
 			}
@@ -171,7 +180,7 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 	return finalize(cfg)
 }
 
-func domainRoute(s sites.Site, rootDomain string, hidePaths []string) (obj, error) {
+func domainRoute(s sites.Site, rootDomain string) (obj, error) {
 	absPath, err := filepath.Abs(s.Path)
 	if err != nil {
 		return nil, err
@@ -179,7 +188,7 @@ func domainRoute(s sites.Site, rootDomain string, hidePaths []string) (obj, erro
 
 	return obj{
 		"match":    arr{obj{"host": arr{s.Host(rootDomain)}}},
-		"handle":   arr{fileHandler(absPath, s.IsSPA, "", hidePaths)},
+		"handle":   arr{fileHandler(absPath, s.IsSPA, "", dotHide(absPath))},
 		"terminal": true,
 	}, nil
 }
@@ -195,7 +204,6 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 	routes := arr{}
 
 	for _, ds := range domainSites {
-		hide := dotHide()
 		www := hasWww(ds.Sites)
 
 		// Sort by descending path depth so more specific (deeper) paths match
@@ -236,7 +244,7 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 
 			routes = append(routes, obj{
 				"match":    arr{obj{"path": arr{pathPrefix, pathPrefix + "/*"}}},
-				"handle":   arr{fileHandler(absPath, s.IsSPA, pathPrefix, hide)},
+				"handle":   arr{fileHandler(absPath, s.IsSPA, pathPrefix, dotHide(absPath))},
 				"terminal": true,
 			})
 		}
