@@ -54,3 +54,5 @@ The install scripts (`domains/zipgo.xyz/install/{linux,macos,windows}.sh`) are *
 |------------------------|----------|----------------------------------------------------|
 | `ZIPGO_DOMAINS_FOLDER` | `.zipgo` | Folder scanned for domain subfolders               |
 | `ZIPGO_LOCALHOST`      | _(off)_  | Set to `1` to force localhost mode (single port)   |
+| `ZIPGO_METRICS`        | _(off)_  | Set to expose a Prometheus `/metrics` endpoint     |
+| `ZIPGO_METRICS_ADDR`   | `127.0.0.1:2019` | Bind address for the metrics endpoint (loopback) |

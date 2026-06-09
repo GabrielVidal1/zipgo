@@ -33,6 +33,41 @@ func IsLocalhost(domains []string) bool { return len(domains) == 0 }
 // LocalhostStartPort is the single port used for all sites in localhost mode.
 const LocalhostStartPort = 9000
 
+// DefaultMetricsAddr is the loopback address used to serve Prometheus metrics
+// when ZIPGO_METRICS is enabled but ZIPGO_METRICS_ADDR is unset.
+const DefaultMetricsAddr = "127.0.0.1:2019"
+
+// MetricsAddr returns the address on which to expose the Prometheus /metrics
+// endpoint, or "" when metrics are disabled. Metrics are opt-in via
+// ZIPGO_METRICS; the bind address can be overridden with ZIPGO_METRICS_ADDR
+// (defaults to loopback so metrics are never accidentally public).
+func MetricsAddr() string {
+	if os.Getenv("ZIPGO_METRICS") == "" {
+		return ""
+	}
+	if a := os.Getenv("ZIPGO_METRICS_ADDR"); a != "" {
+		return a
+	}
+	return DefaultMetricsAddr
+}
+
+// withMetrics enables per-server HTTP request metrics on each server in the
+// given servers map and, when addr is non-empty, adds a dedicated server that
+// serves the Prometheus /metrics endpoint on addr. It is a no-op when addr is
+// empty. The metrics endpoint is a plain HTTP handler with no admin surface.
+func withMetrics(servers obj, addr string) {
+	if addr == "" {
+		return
+	}
+	for _, s := range servers {
+		s.(obj)["metrics"] = obj{}
+	}
+	servers["metrics"] = obj{
+		"listen": arr{addr},
+		"routes": arr{obj{"handle": arr{obj{"handler": "metrics"}}}},
+	}
+}
+
 // dotHide returns the file_server hide patterns that prevent dot-suffixed
 // subdomain folders from being served or listed. Every route should hide
 // these, not just the apex, because subdomain folders can appear at any level.
@@ -63,8 +98,10 @@ func hasWww(all []sites.Site) bool {
 }
 
 // BuildConfig serves every site on its host over HTTPS (Let's Encrypt).
-// It supports multiple domains simultaneously.
-func BuildConfig(domainSites []DomainSites) (*caddy.Config, error) {
+// It supports multiple domains simultaneously. When metricsAddr is non-empty,
+// per-server HTTP metrics are enabled and a Prometheus /metrics endpoint is
+// served on that address.
+func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, error) {
 	routes := arr{}
 	var subjects []string
 
@@ -97,24 +134,27 @@ func BuildConfig(domainSites []DomainSites) (*caddy.Config, error) {
 		}
 	}
 
+	servers := obj{
+		"https": obj{
+			"listen": arr{":443"},
+			"routes": routes,
+		},
+		"http_redirect": obj{
+			"listen": arr{":80"},
+			"routes": arr{obj{"handle": arr{obj{
+				"handler":     "static_response",
+				"status_code": "301",
+				"headers":     obj{"Location": arr{"https://{http.request.host}{http.request.uri}"}},
+			}}}},
+		},
+	}
+	withMetrics(servers, metricsAddr)
+
 	cfg := obj{
 		"logging": obj{"logs": obj{"default": obj{"level": "ERROR"}}},
 		"admin":   obj{"disabled": true},
 		"apps": obj{
-			"http": obj{"servers": obj{
-				"https": obj{
-					"listen": arr{":443"},
-					"routes": routes,
-				},
-				"http_redirect": obj{
-					"listen": arr{":80"},
-					"routes": arr{obj{"handle": arr{obj{
-						"handler":     "static_response",
-						"status_code": "301",
-						"headers":     obj{"Location": arr{"https://{http.request.host}{http.request.uri}"}},
-					}}}},
-				},
-			}},
+			"http": obj{"servers": servers},
 			"tls": obj{"automation": obj{"policies": arr{obj{
 				"subjects": subjects,
 				"issuers": arr{obj{
@@ -148,8 +188,10 @@ func domainRoute(s sites.Site, rootDomain string, hidePaths []string) (obj, erro
 
 // BuildLocalhostConfig serves all sites on a single port (9000) using path
 // routing: localhost:9000/<domain>/<subdomain>. The apex maps to
-// localhost:9000/<domain> (no extra segment).
-func BuildLocalhostConfig(domainSites []DomainSites) (*caddy.Config, error) {
+// localhost:9000/<domain> (no extra segment). When metricsAddr is non-empty,
+// per-server HTTP metrics are enabled and a Prometheus /metrics endpoint is
+// served on that address.
+func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, error) {
 	routes := arr{}
 
 	for _, ds := range domainSites {
@@ -200,16 +242,19 @@ func BuildLocalhostConfig(domainSites []DomainSites) (*caddy.Config, error) {
 		}
 	}
 
+	servers := obj{
+		"sites": obj{
+			"listen": arr{fmt.Sprintf("127.0.0.1:%d", LocalhostStartPort)},
+			"routes": routes,
+		},
+	}
+	withMetrics(servers, metricsAddr)
+
 	cfg := obj{
 		"logging": obj{"logs": obj{"default": obj{"level": "ERROR"}}},
 		"admin":   obj{"disabled": true},
 		"apps": obj{
-			"http": obj{"servers": obj{
-				"sites": obj{
-					"listen": arr{fmt.Sprintf("127.0.0.1:%d", LocalhostStartPort)},
-					"routes": routes,
-				},
-			}},
+			"http": obj{"servers": servers},
 			"tls": obj{"automation": obj{"policies": arr{obj{"issuers": arr{obj{"module": "internal"}}}}}},
 		},
 	}

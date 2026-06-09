@@ -158,8 +158,28 @@ zipgo help      # usage
 | ----------------------- | --------- | -------------------------------------------------- |
 | `ZIPGO_DOMAINS_FOLDER`  | `.zipgo`  | Folder scanned for domain subfolders               |
 | `ZIPGO_LOCALHOST`       | _(off)_   | Set to `1` to force localhost mode (single port)   |
+| `ZIPGO_METRICS`         | _(off)_   | Set to any value to expose Prometheus metrics      |
+| `ZIPGO_METRICS_ADDR`    | `127.0.0.1:2019` | Address for the metrics endpoint (loopback by default) |
 
 If the domains folder contains no valid domain folders, zipgo automatically falls back to localhost mode.
+
+### Metrics
+
+Set `ZIPGO_METRICS=1` to enable per-request HTTP metrics and serve a Prometheus
+endpoint at `http://127.0.0.1:2019/metrics` (override the bind address with
+`ZIPGO_METRICS_ADDR`). The endpoint is a plain metrics handler — Caddy's admin
+API stays disabled — and binds to loopback by default so metrics are never
+accidentally public. Point Prometheus at it:
+
+```yaml
+scrape_configs:
+  - job_name: zipgo
+    static_configs:
+      - targets: ["127.0.0.1:2019"]
+```
+
+Useful series: `caddy_http_requests_total`, `caddy_http_request_duration_seconds`,
+`caddy_http_response_size_bytes` (labeled by handler and status).
 
 ---
 

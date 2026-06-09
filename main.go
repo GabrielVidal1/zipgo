@@ -19,6 +19,7 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/rewrite"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls/standardstek"
+	_ "github.com/caddyserver/caddy/v2/modules/metrics"
 	"github.com/fsnotify/fsnotify"
 
 	"zipgo/internal/builder"
@@ -80,6 +81,10 @@ func main() {
 	// domain folders — serves on a single port with path routing).
 	isLocalhost := len(domains) == 0 || os.Getenv("ZIPGO_LOCALHOST") == "1"
 
+	// metricsAddr is "" unless ZIPGO_METRICS is set, in which case a Prometheus
+	// /metrics endpoint is served on this (loopback by default) address.
+	metricsAddr := builder.MetricsAddr()
+
 	// ---- discoverAll: build []DomainSites for all configured domains ----
 	discoverAll := func() ([]builder.DomainSites, error) {
 		var result []builder.DomainSites
@@ -101,9 +106,9 @@ func main() {
 		}
 		var cfg *caddy.Config
 		if isLocalhost {
-			cfg, err = builder.BuildLocalhostConfig(domainSites)
+			cfg, err = builder.BuildLocalhostConfig(domainSites, metricsAddr)
 		} else {
-			cfg, err = builder.BuildConfig(domainSites)
+			cfg, err = builder.BuildConfig(domainSites, metricsAddr)
 		}
 		if err != nil {
 			return err
@@ -136,7 +141,7 @@ func main() {
 			}
 		}
 		fmt.Println()
-		cfg, err = builder.BuildLocalhostConfig(domainSites)
+		cfg, err = builder.BuildLocalhostConfig(domainSites, metricsAddr)
 	} else {
 		for _, ds := range domainSites {
 			fmt.Printf("🌐  Domain : %s (%d sites)\n", ds.Domain, len(ds.Sites))
@@ -149,7 +154,7 @@ func main() {
 			}
 		}
 		fmt.Println()
-		cfg, err = builder.BuildConfig(domainSites)
+		cfg, err = builder.BuildConfig(domainSites, metricsAddr)
 	}
 	if err != nil {
 		log.Fatalf("❌  Could not build config: %v\n", err)
@@ -165,6 +170,9 @@ func main() {
 		log.Fatalf("❌  %v\n", err)
 	}
 	fmt.Println("✅  Live. Ctrl+C to stop.")
+	if metricsAddr != "" {
+		fmt.Printf("📊  Prometheus metrics: http://%s/metrics\n", metricsAddr)
+	}
 
 	// ---- watch domains dir for changes and auto-reload ----
 	go watchAndReload(domainsDir, reload)
