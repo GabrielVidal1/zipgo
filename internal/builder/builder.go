@@ -32,20 +32,24 @@ func IsLocalhost(domains []string) bool { return len(domains) == 0 }
 // LocalhostStartPort is the single port used for all sites in localhost mode.
 const LocalhostStartPort = 9000
 
-// apexHide returns the file_server hide patterns that keep the apex from
-// exposing its subdomain folders. Subdomain folders are exactly those whose
-// name ends in a dot, so a single "*." glob hides them from both directory
-// listings and direct serving. Returns nil when the domain has no subdomains.
-func apexHide(all []sites.Site) []string {
-	for _, s := range all {
-		if len(s.Labels) >= 1 {
-			return []string{"*."}
-		}
-	}
-	return nil
+// dotHide returns the file_server hide patterns that prevent dot-suffixed
+// subdomain folders from being served or listed. Every route should hide
+// these, not just the apex, because subdomain folders can appear at any level.
+func dotHide() []string {
+	return []string{"*."}
 }
 
 // ---- domain mode -----------------------------------------------------------
+
+// hasWww reports whether the domain has a www subdomain site.
+func hasWww(all []sites.Site) bool {
+	for _, s := range all {
+		if len(s.Labels) == 1 && s.Labels[0] == "www" {
+			return true
+		}
+	}
+	return false
+}
 
 // BuildConfig serves every site on its host over HTTPS (Let's Encrypt).
 // It supports multiple domains simultaneously.
@@ -54,8 +58,19 @@ func BuildConfig(domainSites []DomainSites) (*caddy.Config, error) {
 	var subjects []string
 
 	for _, ds := range domainSites {
-		hide := apexHide(ds.Sites)
+		hide := dotHide()
+		www := hasWww(ds.Sites)
 		subjects = append(subjects, ds.Domain)
+
+		// If a www. subdomain folder exists, redirect bare domain → www.
+		if www {
+			routes = append(routes, obj{
+				"match":    arr{obj{"host": arr{ds.Domain}}},
+				"handle":   arr{obj{"handler": "static_response", "status_code": "308", "headers": obj{"Location": arr{"https://www." + ds.Domain + "{http.request.uri}"}}}},
+				"terminal": true,
+			})
+		}
+
 		for _, s := range ds.Sites {
 			r, err := domainRoute(s, ds.Domain, hide)
 			if err != nil {
@@ -86,27 +101,31 @@ func BuildConfig(domainSites []DomainSites) (*caddy.Config, error) {
 					}}}},
 				},
 			}},
-			"tls": obj{"automation": obj{"policies": arr{obj{"subjects": subjects}}}},
+			"tls": obj{"automation": obj{"policies": arr{obj{
+				"subjects": subjects,
+				"issuers": arr{obj{
+					"module": "acme",
+					"challenges": obj{
+						"http": obj{"disabled": false},
+						"tls":  obj{"disabled": true},
+					},
+				}},
+			}}}},
 		},
 	}
 
 	return finalize(cfg)
 }
 
-func domainRoute(s sites.Site, rootDomain string, apexHidePaths []string) (obj, error) {
+func domainRoute(s sites.Site, rootDomain string, hidePaths []string) (obj, error) {
 	absPath, err := filepath.Abs(s.Path)
 	if err != nil {
 		return nil, err
 	}
 
-	var hide []string
-	if s.IsApex() {
-		hide = apexHidePaths
-	}
-
 	return obj{
 		"match":    arr{obj{"host": arr{s.Host(rootDomain)}}},
-		"handle":   arr{fileHandler(absPath, s.IsSPA, "", hide)},
+		"handle":   arr{fileHandler(absPath, s.IsSPA, "", hidePaths)},
 		"terminal": true,
 	}, nil
 }
@@ -120,7 +139,8 @@ func BuildLocalhostConfig(domainSites []DomainSites) (*caddy.Config, error) {
 	routes := arr{}
 
 	for _, ds := range domainSites {
-		hide := apexHide(ds.Sites)
+		hide := dotHide()
+		www := hasWww(ds.Sites)
 
 		// Sort by descending path depth so more specific (deeper) paths match
 		// before shallower catch-alls.
@@ -129,22 +149,35 @@ func BuildLocalhostConfig(domainSites []DomainSites) (*caddy.Config, error) {
 			return len(sorted[i].Labels) > len(sorted[j].Labels)
 		})
 
+		// If a www. subdomain folder exists, redirect bare domain path → www path.
+		if www {
+			apexPath := "/" + ds.Domain
+			wwwPath := apexPath + "/www"
+			routes = append(routes, obj{
+				"match": arr{obj{"path": arr{apexPath, apexPath + "/*"}}},
+				"handle": arr{
+					obj{"handler": "rewrite", "strip_path_prefix": apexPath},
+					obj{
+						"handler":     "static_response",
+						"status_code": "308",
+						"headers":     obj{"Location": arr{wwwPath + "{http.request.uri}"}},
+					},
+				},
+				"terminal": true,
+			})
+		}
+
 		for _, s := range sorted {
 			pathPrefix := s.LocalhostPath(ds.Domain)
 
 			absPath, err := filepath.Abs(s.Path)
 			if err != nil {
-				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
-			}
-
-			var siteHide []string
-			if s.IsApex() {
-				siteHide = hide
+				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.LocalhostPath(ds.Domain), err)
 			}
 
 			routes = append(routes, obj{
 				"match":    arr{obj{"path": arr{pathPrefix, pathPrefix + "/*"}}},
-				"handle":   arr{fileHandler(absPath, s.IsSPA, pathPrefix, siteHide)},
+				"handle":   arr{fileHandler(absPath, s.IsSPA, pathPrefix, hide)},
 				"terminal": true,
 			})
 		}
