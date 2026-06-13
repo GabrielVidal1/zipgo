@@ -3,15 +3,21 @@ package builder
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"zipgo/internal/meta"
 	"zipgo/internal/sites"
 
 	"github.com/caddyserver/caddy/v2"
 )
+
+// MetaPath is the path (relative to a site's host/prefix) at which the JSON
+// listing of that site's direct child subdomains is served.
+const MetaPath = "/sub-domains-meta"
 
 // obj and arr are shorthand for the untyped JSON shapes we assemble before
 // marshalling the whole config in one pass.
@@ -107,6 +113,70 @@ func hasWww(all []sites.Site) bool {
 	return false
 }
 
+// childMeta returns the metadata of parent's direct child subdomains, keyed by
+// the child's folder name (its leaf label plus a trailing dot, e.g. "docs.").
+// A site C is a direct child of parent when its label chain is parent's chain
+// with exactly one extra leaf prepended (chains are leaf-first). Children
+// without an index.html are skipped. Returns nil when parent has no children.
+func childMeta(parent sites.Site, all []sites.Site) map[string]meta.Meta {
+	var result map[string]meta.Meta
+	for _, c := range all {
+		if len(c.Labels) != len(parent.Labels)+1 {
+			continue
+		}
+		if !labelsEqual(c.Labels[1:], parent.Labels) {
+			continue
+		}
+		if !hasIndex(c) {
+			continue
+		}
+		m, err := meta.Extract(filepath.Join(c.Path, "index.html"))
+		if err != nil {
+			log.Printf("sub-domains-meta: extract %s: %v", c.Path, err)
+			m = meta.Meta{}
+		}
+		if result == nil {
+			result = map[string]meta.Meta{}
+		}
+		result[c.Labels[0]+"."] = m
+	}
+	return result
+}
+
+func labelsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// metaRoute builds a terminal route that serves m as a JSON object under the
+// given matcher. Callers must only invoke it with a non-empty m.
+func metaRoute(matcher obj, m map[string]meta.Meta) (obj, error) {
+	body, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshal sub-domains-meta: %w", err)
+	}
+	return obj{
+		"match": arr{matcher},
+		"handle": arr{obj{
+			"handler":     "static_response",
+			"status_code": 200,
+			"body":        string(body),
+			"headers": obj{
+				"Content-Type":                arr{"application/json"},
+				"Access-Control-Allow-Origin": arr{"*"},
+			},
+		}},
+		"terminal": true,
+	}, nil
+}
+
 // BuildConfig serves every site on its host over HTTPS (Let's Encrypt).
 // It supports multiple domains simultaneously. When metricsAddr is non-empty,
 // per-server HTTP metrics are enabled and a Prometheus /metrics endpoint is
@@ -131,6 +201,15 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 		for _, s := range ds.Sites {
 			if !hasIndex(s) {
 				continue
+			}
+			// Serve /sub-domains-meta for any site that has child subdomains,
+			// before the site's own file_server so the path match wins.
+			if cm := childMeta(s, ds.Sites); cm != nil {
+				mr, err := metaRoute(obj{"host": arr{s.Host(ds.Domain)}, "path": arr{MetaPath}}, cm)
+				if err != nil {
+					return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
+				}
+				routes = append(routes, mr)
 			}
 			r, err := domainRoute(s, ds.Domain)
 			if err != nil {
@@ -169,8 +248,8 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 				"issuers": arr{obj{
 					"module": "acme",
 					"challenges": obj{
-						"http": 		obj{"disabled": false},
-						"tls-alpn":	obj{"disabled": true},
+						"http":     obj{"disabled": false},
+						"tls-alpn": obj{"disabled": true},
 					},
 				}},
 			}}}},
@@ -237,6 +316,16 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 			}
 			pathPrefix := s.LocalhostPath(ds.Domain)
 
+			// Serve <prefix>/sub-domains-meta for any site with child
+			// subdomains, before the site's own routes so the path match wins.
+			if cm := childMeta(s, ds.Sites); cm != nil {
+				mr, err := metaRoute(obj{"path": arr{pathPrefix + MetaPath}}, cm)
+				if err != nil {
+					return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.LocalhostPath(ds.Domain), err)
+				}
+				routes = append(routes, mr)
+			}
+
 			absPath, err := filepath.Abs(s.Path)
 			if err != nil {
 				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.LocalhostPath(ds.Domain), err)
@@ -263,7 +352,7 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 		"admin":   obj{"disabled": true},
 		"apps": obj{
 			"http": obj{"servers": servers},
-			"tls": obj{"automation": obj{"policies": arr{obj{"issuers": arr{obj{"module": "internal"}}}}}},
+			"tls":  obj{"automation": obj{"policies": arr{obj{"issuers": arr{obj{"module": "internal"}}}}}},
 		},
 	}
 

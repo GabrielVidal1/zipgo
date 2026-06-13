@@ -41,6 +41,9 @@ The folder tree *is* the routing table. Inside the domains folder, each subfolde
 - **`internal/config`** — `ReadDomains` scans the domains folder for valid domain subfolders (must contain a dot; malformed are skipped)
 - **`internal/service`** — systemd user-service install/remove/status
 
+### Subdomain metadata endpoint
+Any site that has at least one direct child subdomain (the apex, or a subdomain with nested subdomains) serves a JSON listing at `<host>/sub-domains-meta` (localhost: `/<domain>/<path>/sub-domains-meta`). It maps each direct child's folder name (e.g. `"docs."`) to metadata extracted from that child's `index.html` — `title`, `description`, OpenGraph (`og:*`) tags, and favicon `icon`. The JSON is computed at config-build time in `internal/builder` (`childMeta`/`metaRoute`) using `internal/meta` and embedded as a Caddy `static_response`, so it refreshes on every watcher reload. Children one level down only; leaf sites get no endpoint (404).
+
 ### Site routing
 - **Domain mode**: `Host()` (e.g. `api.docs.rootDomain`) → that folder
 - **Localhost mode**: single port `9000` with path routing `LocalhostPath()` = `/<domain>/<outer>/.../<leaf>` (trailing dots stripped). Routes sorted deepest-first so nested paths win
