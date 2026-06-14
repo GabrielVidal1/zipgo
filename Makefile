@@ -7,7 +7,7 @@ export
 
 DIST             := dist
 
-.PHONY: build run run-local run-prod clean format build-install-scripts deploy
+.PHONY: build run run-local run-prod clean format build-install-scripts deploy deploy-pages
 
 format:
 	gofmt -w .
@@ -40,3 +40,8 @@ clean:
 # Override host/dir/service via DEPLOY_HOST / DEPLOY_DIR / DEPLOY_SERVICE.
 deploy:
 	bash scripts/deploy.sh
+
+# Sync the zipgo.xyz landing pages (domains/zipgo.xyz/) to the host; zipgo
+# hot-reloads, no restart. Override via DEPLOY_HOST / DEPLOY_DIR / DEPLOY_DOMAIN.
+deploy-pages:
+	bash scripts/deploy-pages.sh
