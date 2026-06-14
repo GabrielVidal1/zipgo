@@ -1,6 +1,10 @@
 services:
   zipgo:
-    build: .
+    build:
+      context: docker
+      # Pin a release with: ZIPGO_VERSION=v1.2.3 docker compose build
+      args:
+        ZIPGO_VERSION: ${ZIPGO_VERSION:-latest}
     ports:
       - "80:80"
       - "443:443"
