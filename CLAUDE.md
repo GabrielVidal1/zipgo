@@ -42,7 +42,7 @@ The folder tree *is* the routing table. Inside the domains folder, each subfolde
 - **`internal/service`** — systemd user-service install/remove/status
 
 ### Subdomain metadata endpoint
-Any site that has at least one direct child subdomain (the apex, or a subdomain with nested subdomains) serves a JSON listing at `<host>/sub-domains-meta` (localhost: `/<domain>/<path>/sub-domains-meta`). It maps each direct child's folder name (e.g. `"docs."`) to metadata extracted from that child's `index.html` — `title`, `description`, OpenGraph (`og:*`) tags, and favicon `icon`. The JSON is computed at config-build time in `internal/builder` (`childMeta`/`metaRoute`) using `internal/meta` and embedded as a Caddy `static_response`, so it refreshes on every watcher reload. Children one level down only; leaf sites get no endpoint (404).
+Any site that has at least one direct child subdomain (the apex, or a subdomain with nested subdomains) serves a JSON listing at `<host>/sub-domains-meta` (localhost: `/<domain>/<path>/sub-domains-meta`). It maps each direct child's folder name (e.g. `"docs."`) to metadata extracted from that child's `index.html` — `title`, `description`, OpenGraph (`og:*`) tags, favicon `icon`, and custom `zipgo:*` meta properties (exposed under `zipgo`, keyed by the part after the prefix). The JSON is computed at config-build time in `internal/builder` (`childMeta`/`metaRoute`) using `internal/meta` and embedded as a Caddy `static_response`, so it refreshes on every watcher reload. Children one level down only; leaf sites get no endpoint (404).
 
 ### Site routing
 - **Domain mode**: `Host()` (e.g. `api.docs.rootDomain`) → that folder

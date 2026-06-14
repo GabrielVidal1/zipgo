@@ -16,6 +16,9 @@ type Meta struct {
 	Description string            `json:"description,omitempty"`
 	OpenGraph   map[string]string `json:"openGraph,omitempty"`
 	Icon        string            `json:"icon,omitempty"`
+	// Zipgo holds custom metadata declared via <meta property="zipgo:KEY">
+	// tags, keyed by KEY (the part after the "zipgo:" prefix).
+	Zipgo map[string]string `json:"zipgo,omitempty"`
 }
 
 // Extract parses indexPath and returns its metadata. Missing files or absent
@@ -49,12 +52,21 @@ func Extract(indexPath string) (Meta, error) {
 				if strings.EqualFold(name, "description") && m.Description == "" {
 					m.Description = content
 				}
-				if key := strings.TrimPrefix(strings.ToLower(property), "og:"); key != property && key != "" {
+				lowProp := strings.ToLower(property)
+				if key := strings.TrimPrefix(lowProp, "og:"); key != lowProp && key != "" {
 					if m.OpenGraph == nil {
 						m.OpenGraph = map[string]string{}
 					}
 					if _, ok := m.OpenGraph[key]; !ok {
 						m.OpenGraph[key] = content
+					}
+				}
+				if key := strings.TrimPrefix(lowProp, "zipgo:"); key != lowProp && key != "" {
+					if m.Zipgo == nil {
+						m.Zipgo = map[string]string{}
+					}
+					if _, ok := m.Zipgo[key]; !ok {
+						m.Zipgo[key] = content
 					}
 				}
 			case "link":
