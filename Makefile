@@ -11,7 +11,7 @@ DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 DIST             := dist
 
 .PHONY: build run run-local run-prod clean format build-install-scripts \
-        docker-login docker-binaries docker-build docker-push docker-buildx
+        docker-login docker-binaries docker-build docker-push docker-buildx deploy
 
 format:
 	gofmt -w .
@@ -64,3 +64,8 @@ docker-push: docker-login docker-build
 docker-buildx: docker-login docker-binaries
 	docker buildx build --platform $(DOCKER_PLATFORMS) \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG) --push .
+
+# Pull the freshly pushed image and recreate the container on raspy2.
+# Override host/dir/service via DEPLOY_HOST / DEPLOY_DIR / DEPLOY_SERVICE.
+deploy:
+	bash scripts/deploy.sh
