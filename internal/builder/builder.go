@@ -103,6 +103,23 @@ func hasIndex(s sites.Site) bool {
 	return false
 }
 
+// authorizedOrigins reads the site's index.html and returns the value of its
+// <meta property="zipgo:authorized-origins" content="..."> tag, or "" when
+// absent. The value is a space-separated list of CSP frame-ancestors source
+// expressions (host patterns, supporting "*" wildcards) — e.g.
+// "https://*.gabvdl.xyz" — declaring which origins may embed the site in a
+// frame/iframe. When set, the builder emits a Content-Security-Policy
+// frame-ancestors directive (and drops the default X-Frame-Options) for that
+// site; when absent the site keeps the safe X-Frame-Options: SAMEORIGIN default.
+func authorizedOrigins(s sites.Site) string {
+	m, err := meta.Extract(filepath.Join(s.Path, "index.html"))
+	if err != nil {
+		log.Printf("authorized-origins: extract %s: %v", s.Path, err)
+		return ""
+	}
+	return strings.TrimSpace(m.Zipgo["authorized-origins"])
+}
+
 // hasWww reports whether the domain has a www subdomain site.
 func hasWww(all []sites.Site) bool {
 	for _, s := range all {
@@ -267,7 +284,7 @@ func domainRoute(s sites.Site, rootDomain string) (obj, error) {
 
 	return obj{
 		"match":    arr{obj{"host": arr{s.Host(rootDomain)}}},
-		"handle":   arr{fileHandler(absPath, s.IsSPA, "", dotHide(absPath))},
+		"handle":   arr{fileHandler(absPath, s.IsSPA, "", dotHide(absPath), authorizedOrigins(s))},
 		"terminal": true,
 	}, nil
 }
@@ -333,7 +350,7 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 
 			routes = append(routes, obj{
 				"match":    arr{obj{"path": arr{pathPrefix, pathPrefix + "/*"}}},
-				"handle":   arr{fileHandler(absPath, s.IsSPA, pathPrefix, dotHide(absPath))},
+				"handle":   arr{fileHandler(absPath, s.IsSPA, pathPrefix, dotHide(absPath), authorizedOrigins(s))},
 				"terminal": true,
 			})
 		}
@@ -367,8 +384,8 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 // SPA sites fall back to index.html for unmatched paths. hide lists absolute
 // paths the file_server should hide from listing and serving (used to keep the
 // apex from exposing its dot-suffixed subdomain folders).
-func fileHandler(root string, isSPA bool, stripPrefix string, hide []string) obj {
-	routes := arr{obj{"handle": arr{securityHeaders()}}}
+func fileHandler(root string, isSPA bool, stripPrefix string, hide []string, frameAncestors string) obj {
+	routes := arr{obj{"handle": arr{securityHeaders(frameAncestors)}}}
 
 	if stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
@@ -424,16 +441,28 @@ func toArr(s []string) arr {
 	return out
 }
 
-func securityHeaders() obj {
+// securityHeaders builds the response-header handler applied to every static
+// route. By default it sends X-Frame-Options: SAMEORIGIN, denying cross-origin
+// framing (clickjacking protection). When frameAncestors is non-empty (set per
+// site via the <meta property="zipgo:authorized-origins"> tag) it instead emits
+// a Content-Security-Policy frame-ancestors directive listing the allowed
+// embedding origins, and omits X-Frame-Options (the two conflict; CSP
+// frame-ancestors is the modern, allow-list-capable replacement).
+func securityHeaders(frameAncestors string) obj {
+	set := obj{
+		"X-Content-Type-Options": arr{"nosniff"},
+		"Referrer-Policy":        arr{"strict-origin-when-cross-origin"},
+		"X-XSS-Protection":       arr{"0"},
+		"Permissions-Policy":     arr{"camera=(), microphone=(), geolocation=(), payment=()"},
+	}
+	if frameAncestors == "" {
+		set["X-Frame-Options"] = arr{"SAMEORIGIN"}
+	} else {
+		set["Content-Security-Policy"] = arr{"frame-ancestors 'self' " + frameAncestors}
+	}
 	return obj{
-		"handler": "headers",
-		"response": obj{"set": obj{
-			"X-Content-Type-Options": arr{"nosniff"},
-			"X-Frame-Options":        arr{"SAMEORIGIN"},
-			"Referrer-Policy":        arr{"strict-origin-when-cross-origin"},
-			"X-XSS-Protection":       arr{"0"},
-			"Permissions-Policy":     arr{"camera=(), microphone=(), geolocation=(), payment=()"},
-		}},
+		"handler":  "headers",
+		"response": obj{"set": set},
 	}
 }
 

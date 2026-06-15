@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -59,5 +60,27 @@ func TestBuildConfigWithMetrics(t *testing.T) {
 	}
 	if cfg.AppsRaw["http"] == nil {
 		t.Fatal("missing http app")
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	// Default (no authorized origins): clickjacking-safe X-Frame-Options, no CSP.
+	def := securityHeaders("")["response"].(obj)["set"].(obj)
+	if got := def["X-Frame-Options"]; !reflect.DeepEqual(got, arr{"SAMEORIGIN"}) {
+		t.Fatalf("default X-Frame-Options: want [SAMEORIGIN], got %v", got)
+	}
+	if _, ok := def["Content-Security-Policy"]; ok {
+		t.Fatal("default: should not set Content-Security-Policy")
+	}
+
+	// With authorized origins: CSP frame-ancestors, and X-Frame-Options dropped
+	// (the two conflict).
+	set := securityHeaders("https://*.gabvdl.xyz")["response"].(obj)["set"].(obj)
+	if _, ok := set["X-Frame-Options"]; ok {
+		t.Fatal("with origins: X-Frame-Options must be omitted")
+	}
+	want := arr{"frame-ancestors 'self' https://*.gabvdl.xyz"}
+	if got := set["Content-Security-Policy"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("CSP: want %v, got %v", want, got)
 	}
 }
