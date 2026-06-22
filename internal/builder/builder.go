@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -103,6 +104,14 @@ func hasIndex(s sites.Site) bool {
 	return false
 }
 
+// served reports whether a site should produce a route at all. A site is served
+// when its .zipgoconfig.json doesn't disable it (enable:false) and it has
+// something to serve — either an index.html (file mode) or a rewrite upstream
+// (reverse-proxy mode). Disabled sites are also excluded from sub-domains-meta.
+func served(s sites.Site) bool {
+	return s.Config.Enabled() && (s.Config.Rewrite != "" || hasIndex(s))
+}
+
 // authorizedOrigins reads the site's index.html and returns the value of its
 // <meta property="zipgo:authorized-origins" content="..."> tag, or "" when
 // absent. The value is a space-separated list of CSP frame-ancestors source
@@ -123,7 +132,7 @@ func authorizedOrigins(s sites.Site) string {
 // hasWww reports whether the domain has a www subdomain site.
 func hasWww(all []sites.Site) bool {
 	for _, s := range all {
-		if len(s.Labels) == 1 && s.Labels[0] == "www" && hasIndex(s) {
+		if len(s.Labels) == 1 && s.Labels[0] == "www" && s.Config.Enabled() && hasIndex(s) {
 			return true
 		}
 	}
@@ -144,7 +153,7 @@ func childMeta(parent sites.Site, all []sites.Site) map[string]meta.Meta {
 		if !labelsEqual(c.Labels[1:], parent.Labels) {
 			continue
 		}
-		if !hasIndex(c) {
+		if !c.Config.Enabled() || !hasIndex(c) {
 			continue
 		}
 		m, err := meta.Extract(filepath.Join(c.Path, "index.html"))
@@ -200,6 +209,10 @@ func metaRoute(matcher obj, m map[string]meta.Meta) (obj, error) {
 // served on that address.
 func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, error) {
 	routes := arr{}
+	// httpRoutes are the per-site routes served on :80 for sites that opt into
+	// plain HTTP via allowHttp. Everything else falls through to the catch-all
+	// HTTPS redirect appended below.
+	httpRoutes := arr{}
 	var subjects []string
 
 	for _, ds := range domainSites {
@@ -216,9 +229,10 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 		}
 
 		for _, s := range ds.Sites {
-			if !hasIndex(s) {
+			if !served(s) {
 				continue
 			}
+			httpAllowed := s.Config.HTTPAllowed()
 			// Serve /sub-domains-meta for any site that has child subdomains,
 			// before the site's own file_server so the path match wins.
 			if cm := childMeta(s, ds.Sites); cm != nil {
@@ -227,17 +241,30 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 					return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
 				}
 				routes = append(routes, mr)
+				if httpAllowed {
+					httpRoutes = append(httpRoutes, mr)
+				}
 			}
 			r, err := domainRoute(s, ds.Domain)
 			if err != nil {
 				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
 			}
 			routes = append(routes, r)
+			if httpAllowed {
+				httpRoutes = append(httpRoutes, r)
+			}
 			if !s.IsApex() {
 				subjects = append(subjects, s.Host(ds.Domain))
 			}
 		}
 	}
+
+	// Catch-all: any host not explicitly allowed over HTTP is 301'd to HTTPS.
+	httpRoutes = append(httpRoutes, obj{"handle": arr{obj{
+		"handler":     "static_response",
+		"status_code": "301",
+		"headers":     obj{"Location": arr{"https://{http.request.host}{http.request.uri}"}},
+	}}})
 
 	servers := obj{
 		"https": obj{
@@ -246,11 +273,7 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 		},
 		"http_redirect": obj{
 			"listen": arr{":80"},
-			"routes": arr{obj{"handle": arr{obj{
-				"handler":     "static_response",
-				"status_code": "301",
-				"headers":     obj{"Location": arr{"https://{http.request.host}{http.request.uri}"}},
-			}}}},
+			"routes": httpRoutes,
 		},
 	}
 	withMetrics(servers, metricsAddr)
@@ -277,16 +300,77 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 }
 
 func domainRoute(s sites.Site, rootDomain string) (obj, error) {
+	h, err := siteHandler(s, "")
+	if err != nil {
+		return nil, err
+	}
+	return obj{
+		"match":    arr{obj{"host": arr{s.Host(rootDomain)}}},
+		"handle":   arr{h},
+		"terminal": true,
+	}, nil
+}
+
+// siteHandler builds the handler for a single site: a reverse_proxy subroute
+// when the site declares a rewrite upstream, otherwise the file_server subroute.
+// stripPrefix is the localhost path prefix to strip ("" in domain mode).
+func siteHandler(s sites.Site, stripPrefix string) (obj, error) {
+	if s.Config.Rewrite != "" {
+		return proxyHandler(s, stripPrefix), nil
+	}
 	absPath, err := filepath.Abs(s.Path)
 	if err != nil {
 		return nil, err
 	}
+	// Hide subdomain folders and the per-site config file from the file_server.
+	hide := append(dotHide(absPath), filepath.Join(absPath, sites.ConfigFileName))
+	return fileHandler(absPath, s.IsSPA, stripPrefix, hide, authorizedOrigins(s)), nil
+}
 
-	return obj{
-		"match":    arr{obj{"host": arr{s.Host(rootDomain)}}},
-		"handle":   arr{fileHandler(absPath, s.IsSPA, "", dotHide(absPath), authorizedOrigins(s))},
-		"terminal": true,
-	}, nil
+// proxyHandler builds a reverse_proxy subroute forwarding to the site's rewrite
+// upstream. It keeps the same security-headers handler as file routes, and (in
+// localhost mode) strips the path prefix before proxying.
+func proxyHandler(s sites.Site, stripPrefix string) obj {
+	dial, useTLS := proxyDial(s.Config.Rewrite)
+	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s))}}}
+	if stripPrefix != "" {
+		routes = append(routes, obj{"handle": arr{obj{
+			"handler":           "rewrite",
+			"strip_path_prefix": stripPrefix,
+		}}})
+	}
+	rp := obj{
+		"handler":   "reverse_proxy",
+		"upstreams": arr{obj{"dial": dial}},
+	}
+	if useTLS {
+		rp["transport"] = obj{"protocol": "http", "tls": obj{}}
+	}
+	routes = append(routes, obj{"handle": arr{rp}})
+	return obj{"handler": "subroute", "routes": routes}
+}
+
+// proxyDial turns a rewrite value into a Caddy reverse_proxy dial address
+// (host:port) and reports whether the upstream uses TLS. A bare host:port is
+// returned unchanged; a value with a scheme (http://, https://) has its port
+// defaulted (80/443) when omitted.
+func proxyDial(rewrite string) (dial string, useTLS bool) {
+	r := strings.TrimSpace(rewrite)
+	if strings.Contains(r, "://") {
+		if u, err := url.Parse(r); err == nil && u.Host != "" {
+			host := u.Host
+			useTLS = u.Scheme == "https"
+			if u.Port() == "" {
+				if useTLS {
+					host += ":443"
+				} else {
+					host += ":80"
+				}
+			}
+			return host, useTLS
+		}
+	}
+	return r, false
 }
 
 // ---- localhost mode --------------------------------------------------------
@@ -328,7 +412,7 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 		}
 
 		for _, s := range sorted {
-			if !hasIndex(s) {
+			if !served(s) {
 				continue
 			}
 			pathPrefix := s.LocalhostPath(ds.Domain)
@@ -343,14 +427,14 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 				routes = append(routes, mr)
 			}
 
-			absPath, err := filepath.Abs(s.Path)
+			h, err := siteHandler(s, pathPrefix)
 			if err != nil {
 				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.LocalhostPath(ds.Domain), err)
 			}
 
 			routes = append(routes, obj{
 				"match":    arr{obj{"path": arr{pathPrefix, pathPrefix + "/*"}}},
-				"handle":   arr{fileHandler(absPath, s.IsSPA, pathPrefix, dotHide(absPath), authorizedOrigins(s))},
+				"handle":   arr{h},
 				"terminal": true,
 			})
 		}

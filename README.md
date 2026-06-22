@@ -111,6 +111,35 @@ yourdomain.com/
 
 **SPA detection** — a site is treated as a single-page app when it contains `index.html` **and** one of the bundler output directories: `assets/`, `static/`, `_next/`, `dist/`. All unmatched paths are rewritten to `/index.html`.
 
+### Per-site config (`.zipgoconfig.json`)
+
+Drop a `.zipgoconfig.json` file in any domain/subdomain folder to tweak how that
+single site is served. The file is never served to clients (the file server
+hides it). All keys are optional:
+
+```jsonc
+{
+  "enable": true,                  // false → don't serve this site, and omit it
+                                   //         from any parent's sub-domains-meta
+  "rewrite": "localhost:8080",     // reverse-proxy to this upstream instead of
+                                   //   serving files (host:port, or a URL with
+                                   //   scheme: "https://api.example.com")
+  "allowHttp": false               // true → also serve over plain HTTP (:80)
+                                   //        instead of redirecting to HTTPS
+}
+```
+
+- **`enable: false`** removes the site entirely — no route, no TLS cert, and it
+  disappears from its parent's `/sub-domains-meta` listing.
+- **`rewrite`** makes the site a reverse proxy: requests are forwarded to the
+  given upstream rather than served from the folder (no `index.html` needed). A
+  bare `host:port` dials plain HTTP; a `https://` URL proxies over TLS.
+- **`allowHttp: true`** serves the site on port 80 as well as 443 (by default
+  every host is 301-redirected to HTTPS). No effect in localhost mode, which is
+  already HTTP-only.
+
+Edits are picked up by the file watcher and hot-reloaded like any other change.
+
 ---
 
 ## Deploying a Site

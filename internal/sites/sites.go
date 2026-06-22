@@ -1,11 +1,42 @@
 package sites
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ConfigFileName is the per-site settings file. When present in a site folder
+// it tweaks how that site is served. It is never served to clients (the
+// file_server hides it).
+const ConfigFileName = ".zipgoconfig.json"
+
+// Config holds the optional per-site settings read from .zipgoconfig.json.
+// Pointer fields distinguish "unset" (nil → use the default) from an explicit
+// true/false in the file.
+type Config struct {
+	// Enable, when explicitly false, removes the site entirely: it is not
+	// served and is excluded from any parent's sub-domains-meta listing.
+	// Unset/true means the site is served as normal.
+	Enable *bool `json:"enable,omitempty"`
+	// Rewrite, when non-empty, reverse-proxies the site to another upstream
+	// instead of serving files from its folder. The value is an upstream
+	// address: a bare host:port (e.g. "localhost:8080") or a URL with scheme
+	// (e.g. "https://api.example.com").
+	Rewrite string `json:"rewrite,omitempty"`
+	// AllowHTTP, when true, also serves the site over plain HTTP (port 80)
+	// instead of redirecting to HTTPS. Has no effect in localhost mode.
+	AllowHTTP *bool `json:"allowHttp,omitempty"`
+}
+
+// Enabled reports whether the site should be served (default true).
+func (c Config) Enabled() bool { return c.Enable == nil || *c.Enable }
+
+// HTTPAllowed reports whether the site opts into being served over plain HTTP
+// (default false).
+func (c Config) HTTPAllowed() bool { return c.AllowHTTP != nil && *c.AllowHTTP }
 
 type Site struct {
 	// Labels is the subdomain label chain, leaf-first. Empty means the apex
@@ -14,6 +45,9 @@ type Site struct {
 	Labels []string
 	Path   string
 	IsSPA  bool
+	// Config is the per-site settings from .zipgoconfig.json (zero value when
+	// the file is absent).
+	Config Config
 }
 
 // IsApex reports whether this site is served at the bare domain.
@@ -52,10 +86,15 @@ func Discover(domainDir string) ([]Site, error) {
 	var result []Site
 	var walk func(dir string, labels []string) error
 	walk = func(dir string, labels []string) error {
+		cfg, err := readConfig(dir)
+		if err != nil {
+			return err
+		}
 		result = append(result, Site{
 			Labels: append([]string{}, labels...),
 			Path:   dir,
 			IsSPA:  detectSPA(dir),
+			Config: cfg,
 		})
 
 		entries, err := os.ReadDir(dir)
@@ -85,6 +124,24 @@ func Discover(domainDir string) ([]Site, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+// readConfig reads dir/.zipgoconfig.json. A missing file is not an error (the
+// zero-value Config applies); a present-but-malformed file is, so a typo is
+// surfaced rather than silently ignored.
+func readConfig(dir string) (Config, error) {
+	data, err := os.ReadFile(filepath.Join(dir, ConfigFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Config{}, nil
+		}
+		return Config{}, fmt.Errorf("reading %s: %w", filepath.Join(dir, ConfigFileName), err)
+	}
+	var c Config
+	if err := json.Unmarshal(data, &c); err != nil {
+		return Config{}, fmt.Errorf("parsing %s: %w", filepath.Join(dir, ConfigFileName), err)
+	}
+	return c, nil
 }
 
 // detectSPA returns true when the dir has index.html + a bundler output dir.

@@ -3,6 +3,8 @@ package builder
 import (
 	"reflect"
 	"testing"
+
+	"zipgo/internal/sites"
 )
 
 func TestMetricsAddr(t *testing.T) {
@@ -60,6 +62,65 @@ func TestBuildConfigWithMetrics(t *testing.T) {
 	}
 	if cfg.AppsRaw["http"] == nil {
 		t.Fatal("missing http app")
+	}
+}
+
+func TestProxyDial(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantTLS bool
+	}{
+		{"localhost:8080", "localhost:8080", false},
+		{"127.0.0.1:3000", "127.0.0.1:3000", false},
+		{"http://api.example.com", "api.example.com:80", false},
+		{"https://api.example.com", "api.example.com:443", true},
+		{"https://api.example.com:8443", "api.example.com:8443", true},
+		{"  localhost:9000  ", "localhost:9000", false},
+	}
+	for _, c := range cases {
+		got, tls := proxyDial(c.in)
+		if got != c.want || tls != c.wantTLS {
+			t.Errorf("proxyDial(%q) = (%q, %v), want (%q, %v)", c.in, got, tls, c.want, c.wantTLS)
+		}
+	}
+}
+
+func TestServed(t *testing.T) {
+	tru, fls := true, false
+	dir := t.TempDir() // no index.html inside
+
+	// No index, no rewrite → not served.
+	if served(sites.Site{Path: dir}) {
+		t.Error("empty dir should not be served")
+	}
+	// Rewrite upstream → served even without an index.html.
+	if !served(sites.Site{Path: dir, Config: sites.Config{Rewrite: "localhost:8080"}}) {
+		t.Error("rewrite site should be served")
+	}
+	// Explicitly disabled → not served, even with a rewrite.
+	if served(sites.Site{Path: dir, Config: sites.Config{Enable: &fls, Rewrite: "localhost:8080"}}) {
+		t.Error("disabled site should not be served")
+	}
+	// enable:true with a rewrite → served.
+	if !served(sites.Site{Path: dir, Config: sites.Config{Enable: &tru, Rewrite: "localhost:8080"}}) {
+		t.Error("enabled rewrite site should be served")
+	}
+}
+
+func TestProxyHandlerTLS(t *testing.T) {
+	h := proxyHandler(sites.Site{Config: sites.Config{Rewrite: "https://api.example.com"}}, "")
+	last := h["routes"].(arr)[len(h["routes"].(arr))-1].(obj)
+	rp := last["handle"].(arr)[0].(obj)
+	if rp["handler"] != "reverse_proxy" {
+		t.Fatalf("want reverse_proxy, got %v", rp["handler"])
+	}
+	if rp["transport"] == nil {
+		t.Fatal("https upstream should set a TLS transport")
+	}
+	dial := rp["upstreams"].(arr)[0].(obj)["dial"]
+	if dial != "api.example.com:443" {
+		t.Fatalf("dial: want api.example.com:443, got %v", dial)
 	}
 }
 

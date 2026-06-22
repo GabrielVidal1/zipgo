@@ -165,9 +165,15 @@ func main() {
 		fmt.Printf("📁  Domains: %d  Sites: %d\n\n", len(domainSites), totalSites)
 		for _, ds := range domainSites {
 			for _, s := range ds.Sites {
+				if !s.Config.Enabled() {
+					continue
+				}
 				kind := "static"
 				if s.IsSPA {
 					kind = "spa   "
+				}
+				if s.Config.Rewrite != "" {
+					kind = "proxy "
 				}
 				fmt.Printf("   [%s]  http://localhost:%d%s\n", kind, builder.LocalhostStartPort, s.LocalhostPath(ds.Domain))
 			}
@@ -178,11 +184,21 @@ func main() {
 		for _, ds := range domainSites {
 			fmt.Printf("🌐  Domain : %s (%d sites)\n", ds.Domain, len(ds.Sites))
 			for _, s := range ds.Sites {
+				if !s.Config.Enabled() {
+					continue
+				}
 				kind := "static"
 				if s.IsSPA {
 					kind = "spa   "
 				}
-				fmt.Printf("   [%s]  https://%s\n", kind, s.Host(ds.Domain))
+				if s.Config.Rewrite != "" {
+					kind = "proxy "
+				}
+				scheme := "https"
+				if s.Config.HTTPAllowed() {
+					scheme = "http(s)"
+				}
+				fmt.Printf("   [%s]  %s://%s\n", kind, scheme, s.Host(ds.Domain))
 			}
 		}
 		fmt.Println()
