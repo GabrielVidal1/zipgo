@@ -131,11 +131,29 @@ cp -r dist/ .zipgo/yourdomain.com/app./
 
 ```bash
 zipgo serve     # start the server (default when no command is given)
+zipgo deploy    # rsync a local dir to a remote zipgo host over SSH
 zipgo enable    # install and start the systemd user service
 zipgo disable   # stop and remove the systemd user service
 zipgo status    # show service status
 zipgo help      # usage
 ```
+
+### `zipgo deploy`
+
+Push a local build to a remote zipgo host. It creates the domain/subdomain
+folder tree (the trailing-dot convention above) on the remote and rsyncs the
+directory's contents into it:
+
+```bash
+zipgo deploy dist/ -d love-letters.game.gabvdl.xyz \
+    --ssh gabrielvidal@100.74.118.12:/home/gabrielvidal/services/domains
+# -> creates  .../domains/gabvdl.xyz/game./love-letters.
+#    serving   https://love-letters.game.gabvdl.xyz  (zipgo hot-reloads)
+```
+
+`-d/--domain` is repeatable (deploy the same build to several hosts). Flags:
+`--ssh user@host:/base/path` (required), `--exclude <pat>` (repeatable),
+`--no-delete` (don't mirror), `-n/--dry-run`.
 
 ---
 

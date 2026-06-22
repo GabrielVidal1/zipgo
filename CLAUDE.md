@@ -18,7 +18,7 @@ make clean          # Remove binary
 make build-install-scripts  # Regenerate install/{linux,macos,windows}.sh from parts
 ```
 
-CLI subcommands: `zipgo serve` (default), `zipgo enable|disable|status` (systemd user service), `zipgo help`.
+CLI subcommands: `zipgo serve` (default), `zipgo deploy` (rsync a local dir to a remote zipgo host over SSH, creating the trailing-dot subdomain folder tree — see `internal/deploy`), `zipgo enable|disable|status` (systemd user service), `zipgo help`.
 
 ## Architecture
 

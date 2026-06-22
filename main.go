@@ -24,9 +24,28 @@ import (
 
 	"zipgo/internal/builder"
 	"zipgo/internal/config"
+	"zipgo/internal/deploy"
 	"zipgo/internal/service"
 	"zipgo/internal/sites"
 )
+
+const deployUsage = `Usage: zipgo deploy <dir> -d <subdomains>.<domain> [-d ...] --ssh user@host:/base/path
+
+Recursively creates the domain/subdomain folder tree (zipgo's trailing-dot
+convention) on the remote host and rsyncs <dir>'s contents into it.
+
+  -d, --domain   target host, e.g. love-letters.game.gabvdl.xyz (repeatable)
+      --ssh      remote destination: user@host:/base/domains/path
+      --exclude  rsync exclude pattern (repeatable)
+      --no-delete  do not mirror (keep remote files missing from <dir>)
+  -n, --dry-run  show what rsync would do; skip remote mkdir
+
+Example:
+  zipgo deploy dist/ -d love-letters.game.gabvdl.xyz \
+      --ssh gabrielvidal@100.74.118.12:/home/gabrielvidal/services/domains
+  # -> /home/gabrielvidal/services/domains/gabvdl.xyz/game./love-letters.
+  #    served at https://love-letters.game.gabvdl.xyz
+`
 
 func main() {
 	sub := ""
@@ -50,14 +69,27 @@ func main() {
 			log.Fatalf("❌  %v\n", err)
 		}
 		return
+	case "deploy":
+		opts, err := deploy.ParseArgs(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, deployUsage)
+			os.Exit(2)
+		}
+		if err := deploy.Run(opts); err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		return
 	case "help", "--help", "-h":
 		fmt.Println("Usage: zipgo [command]")
 		fmt.Println()
 		fmt.Println("Commands:")
 		fmt.Println("  serve    Start the server (default)")
+		fmt.Println("  deploy   rsync a local dir to a remote zipgo host over SSH")
 		fmt.Println("  enable   Install and start the systemd user service")
 		fmt.Println("  disable  Stop and remove the systemd user service")
 		fmt.Println("  status   Show service status")
+		fmt.Println()
+		fmt.Print(deployUsage)
 		return
 	case "serve", "":
 		// fall through to server startup
