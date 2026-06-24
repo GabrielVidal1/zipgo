@@ -100,6 +100,20 @@ func TestParseArgs(t *testing.T) {
 	if !reflect.DeepEqual(o.Excludes, []string{"images/", "*.map"}) {
 		t.Errorf("Excludes = %v", o.Excludes)
 	}
+	if o.IncludeSubdomains {
+		t.Error("IncludeSubdomains should default to false")
+	}
+
+	// --include-subdomains opts out of the auto-exclude
+	o, err = ParseArgs([]string{
+		"dist/", "-d", "x.gabvdl.xyz", "--ssh", "u@h:/b", "--include-subdomains",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.IncludeSubdomains {
+		t.Error("--include-subdomains should set IncludeSubdomains")
+	}
 
 	for _, args := range [][]string{
 		{"-d", "x.gabvdl.xyz", "--ssh", "u@h:/b"},        // missing src

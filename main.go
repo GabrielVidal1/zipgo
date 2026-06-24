@@ -38,6 +38,8 @@ convention) on the remote host and rsyncs <dir>'s contents into it.
       --ssh      remote destination: user@host:/base/domains/path
       --exclude  rsync exclude pattern (repeatable)
       --no-delete  do not mirror (keep remote files missing from <dir>)
+      --include-subdomains  let the mirror also delete nested subdomain
+                 folders (by default trailing-dot subdomain dirs are kept)
   -n, --dry-run  show what rsync would do; skip remote mkdir
 
 Example:

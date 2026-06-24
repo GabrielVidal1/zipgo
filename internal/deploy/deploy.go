@@ -31,7 +31,19 @@ type Options struct {
 	Delete   bool     // mirror the destination (rsync --delete); default true
 	Excludes []string // rsync --exclude patterns
 	DryRun   bool     // rsync --dry-run; also skips remote mkdir
+
+	// IncludeSubdomains, when true, lets the --delete mirror also delete nested
+	// subdomain folders (zipgo's trailing-dot directories, e.g. `pb.`/`demo.`).
+	// It defaults to false: nested subdomains are auto-excluded so deploying a
+	// parent host never wipes a child subdomain published under it.
+	IncludeSubdomains bool
 }
+
+// subdomainExclude is the rsync pattern matching zipgo's nested-subdomain
+// folders: every subdomain label is stored as a directory whose name ends in a
+// trailing dot (e.g. `pb.`, `demo.`). The trailing `/` anchors the match to
+// directories only.
+const subdomainExclude = "*./"
 
 // Target is a parsed --ssh destination.
 type Target struct {
@@ -132,6 +144,12 @@ func Run(o Options) error {
 		args := []string{"-avz"}
 		if o.Delete {
 			args = append(args, "--delete")
+			// Auto-protect nested subdomain folders from the mirror: their
+			// trailing-dot directories are separate sites, not part of this
+			// build, so deploying a parent host must never delete a child.
+			if !o.IncludeSubdomains {
+				args = append(args, "--exclude="+subdomainExclude)
+			}
 		}
 		for _, ex := range o.Excludes {
 			args = append(args, "--exclude="+ex)
@@ -198,6 +216,8 @@ func ParseArgs(args []string) (Options, error) {
 			o.Delete = false
 		case a == "--delete":
 			o.Delete = true
+		case a == "--include-subdomains":
+			o.IncludeSubdomains = true
 		case a == "--dry-run" || a == "-n":
 			o.DryRun = true
 		case strings.HasPrefix(a, "-"):
