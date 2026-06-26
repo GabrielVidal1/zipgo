@@ -55,7 +55,6 @@ type DomainSites struct {
 **`BuildConfig` changes:**
 - TLS subjects now include all domains and their wildcards: `["domain1.com", "*.domain1.com", "domain2.com", "*.domain2.com", ...]`
 - Backoffice responds at `backoffice.<domain>` for **every** configured domain.
-- Analytics (Vince) responds at `analytics.<domain>` for every domain.
 - Site routes are generated per domain.
 - Landing page injection happens per domain independently.
 
@@ -63,7 +62,7 @@ type DomainSites struct {
 - Uses a **single port** (9000) instead of one port per site.
 - Sites are routed by path prefix: `localhost:9000/<domain>/<subdomain>`.
 - The `root` subdomain maps to `localhost:9000/<domain>` (no extra path segment).
-- Backoffice stays on port 8999, Vince on 8898 (unchanged).
+- Backoffice stays on port 8999 (unchanged). Analytics is handled externally (Matomo), not by zipgo.
 - SPA fallback rewrite is scoped to the path prefix (strips prefix before serving files).
 
 **Example localhost URLs:**
@@ -85,7 +84,7 @@ http://localhost:8999                    → backoffice
 
 | Before | After |
 |--------|-------|
-| `Handler(appsDir, username, password string, onReload func() error, urlFor func(string) string, vinceURL, rootDomain string)` | `Handler(domainsDir, username, password string, onReload func() error, urlFor func(string, string) string, vinceURL string)` |
+| `Handler(appsDir, username, password string, onReload func() error, urlFor func(string) string, rootDomain string)` | `Handler(domainsDir, username, password string, onReload func() error, urlFor func(string, string) string)` |
 
 **Struct changes:**
 - `appsDir string` → `domainsDir string`
@@ -138,7 +137,6 @@ type siteInfo struct {
 - `reload` calls `discoverAll()` then `BuildConfig` or `BuildLocalhostConfig`.
 - `urlFor` signature changes to `func(domain, name string) string`.
   - In localhost mode returns `http://localhost:9000/<domain>/<name>` (or `http://localhost:9000/<domain>` for `root`).
-- Vince URL uses the first configured domain (or localhost fallback).
 - Startup summary prints per-domain site listings with path-based localhost URLs.
 
 ---
@@ -191,7 +189,6 @@ When domain folders exist, localhost mode uses a **single port with path routing
 | `http://localhost:9000/<domain>` | `domains/<domain>/root/` |
 | `http://localhost:9000/<domain>/<sub>` | `domains/<domain>/<sub>/` |
 | `http://localhost:8999` | backoffice |
-| `http://localhost:8898` | Vince analytics |
 
 This replaces the old per-site sequential port scheme (`9000`, `9001`, `9002`, ...).
 

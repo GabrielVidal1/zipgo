@@ -138,7 +138,6 @@ case "$SETUP_SERVICE" in
   <key>EnvironmentVariables</key>
   <dict>
     <key>ZIPGO_PASS</key>      <string>${ZIPGO_PASS}</string>
-    <key>VINCE_MANAGED</key>   <string>1</string>
   </dict>
   <key>RunAtLoad</key>         <true/>
   <key>KeepAlive</key>         <true/>
@@ -154,37 +153,6 @@ PLIST
     info "Stop:    launchctl unload ${PLIST_FILE}"
     info "Start:   launchctl load -w ${PLIST_FILE}"
 
-    # vince plist (only if binary was downloaded)
-    if [ -n "$VINCE_DEST" ]; then
-      VINCE_PLIST="${PLIST_DIR}/com.vince.plist"
-      cat > "$VINCE_PLIST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>             <string>com.vince</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${VINCE_DEST}</string>
-    <string>serve</string>
-    <string>--data</string>    <string>${VINCE_DATA}</string>
-    <string>--listen</string>  <string>127.0.0.1:8899</string>
-  </array>
-  <key>RunAtLoad</key>         <true/>
-  <key>KeepAlive</key>         <true/>
-  <key>StandardOutPath</key>   <string>${LOG_DIR}/vince.log</string>
-  <key>StandardErrorPath</key> <string>${LOG_DIR}/vince.err</string>
-</dict>
-</plist>
-PLIST
-      launchctl unload "$VINCE_PLIST" 2>/dev/null || true
-      launchctl load -w "$VINCE_PLIST"
-      success "Vince launchd agent registered → ${VINCE_PLIST}"
-      info "Stop:    launchctl unload ${VINCE_PLIST}"
-      info "Start:   launchctl load -w ${VINCE_PLIST}"
-    fi
-
     ;;
 esac
 
@@ -199,11 +167,3 @@ printf "%s\n" "      ${GREY}(leave empty for localhost mode)${RESET}"
 printf "\n"
 printf "%s\n" "  ${CYAN}2.${RESET}  Backoffice → ${BOLD}http://localhost:8999${RESET}"
 printf "\n"
-
-if [ -n "$VINCE_DEST" ]; then
-  printf "%s\n" "  ${CYAN}3.${RESET}  Vince analytics → ${BOLD}http://localhost:8899${RESET}"
-  printf "%s\n" "      Login: ${BOLD}${VINCE_ADMIN}${RESET} / ${VINCE_PASS}"
-  printf "\n"
-  printf "%s\n" "      ${GREY}In domain mode: https://analytics.<your-domain>${RESET}"
-  printf "\n"
-fi
