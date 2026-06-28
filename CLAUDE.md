@@ -18,7 +18,14 @@ make clean          # Remove binary
 make build-install-scripts  # Regenerate install/{linux,macos,windows}.sh from parts
 ```
 
-CLI subcommands: `zipgo serve` (default), `zipgo deploy` (rsync a local dir to a remote zipgo host over SSH, creating the trailing-dot subdomain folder tree — see `internal/deploy`), `zipgo enable|disable|status` (systemd user service), `zipgo help`.
+CLI subcommands: `zipgo serve` (default), `zipgo deploy` (rsync a local dir to a remote zipgo host over SSH, creating the trailing-dot subdomain folder tree — see `internal/deploy`), `zipgo ls`/`zipgo info` (read-only SSH inspection of what's deployed on the remote target — see `internal/remote`), `zipgo enable|disable|status` (systemd user service), `zipgo help`.
+
+### Config-driven deploy (`internal/zipconfig`)
+`zipgo deploy`, `ls` and `info` resolve their target and source folders from two config files so they don't have to be repeated (`internal/zipconfig`, both found by **ascending** the dir tree from the cwd):
+- **Root** `.zipgo.json` → `{ "target": "user@host:/base", "targets": {"name": "..."} }` — the default `--ssh` destination.
+- **Project** `package.json` `"zipgo"` field → `{ "deploy": {"<host>": "<srcDir>"}, "target": "<override>" }` — maps each host to its local build folder (paths relative to package.json).
+
+`deploy.ParseArgs` is **lenient** (src/-d/--ssh all optional); `deploy.Resolve(&opts, proj, root)` is the pure function that fills `opts.SSH` + `opts.Jobs []Job{Host,Src}` from flags+config and validates, then `deploy.Run` iterates the jobs. Precedence: `--ssh` > project `target` > root `target`; `-d` hosts > all map keys; positional dir > map entry. The fully-explicit `dir -d host --ssh …` form is unchanged (back-compat). `deploy.HostFromRemote` is the inverse of `RemoteDir` (folder path → host), used by `ls`.
 
 ## Architecture
 

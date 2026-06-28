@@ -20,14 +20,17 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"sort"
 	"strings"
+
+	"zipgo/internal/zipconfig"
 )
 
 // Options is the parsed `zipgo deploy` invocation.
 type Options struct {
-	Src      string   // local source directory (its CONTENTS are synced)
-	Hosts    []string // one or more fully-qualified hosts (from -d)
-	SSH      string   // raw --ssh spec: user@host:/base/path
+	Src      string   // explicit positional source dir (its CONTENTS are synced)
+	Hosts    []string // explicit fully-qualified hosts (from -d), may be empty
+	SSH      string   // raw --ssh/--target spec: user@host:/base/path or a name
 	Delete   bool     // mirror the destination (rsync --delete); default true
 	Excludes []string // rsync --exclude patterns
 	DryRun   bool     // rsync --dry-run; also skips remote mkdir
@@ -37,6 +40,17 @@ type Options struct {
 	// It defaults to false: nested subdomains are auto-excluded so deploying a
 	// parent host never wipes a child subdomain published under it.
 	IncludeSubdomains bool
+
+	// Jobs is the resolved list of (host, source) pairs to deploy. It is filled
+	// by Resolve from the explicit flags and/or the project/root config, and is
+	// what Run iterates.
+	Jobs []Job
+}
+
+// Job is one resolved deploy: sync Src's contents to the folder for Host.
+type Job struct {
+	Host string
+	Src  string
 }
 
 // subdomainExclude is the rsync pattern matching zipgo's nested-subdomain
@@ -84,6 +98,40 @@ func RemoteDir(baseDir, host string) (string, error) {
 	return p, nil
 }
 
+// HostFromRemote is the inverse of RemoteDir: given the base dir and a remote
+// folder path under it, it reconstructs the host the folder serves. ok is false
+// when dir is not a valid site folder — e.g. an ordinary content directory
+// whose name lacks zipgo's trailing-dot subdomain marker (assets/, install/…),
+// or a path outside baseDir.
+//
+//	<base>/gabvdl.xyz/game./love-letters.  ->  love-letters.game.gabvdl.xyz
+func HostFromRemote(baseDir, dir string) (host string, ok bool) {
+	base := path.Clean(baseDir)
+	d := path.Clean(dir)
+	rel := strings.TrimPrefix(d, base+"/")
+	if rel == d || rel == "" {
+		return "", false // dir not under base, or equals base
+	}
+	parts := strings.Split(rel, "/")
+	apex := parts[0]
+	if !strings.Contains(apex, ".") {
+		return "", false // first component must be a registrable domain folder
+	}
+	// Every component after the apex must be a trailing-dot subdomain folder;
+	// anything else is ordinary site content, not a site of its own.
+	subs := parts[1:] // parent-first
+	labels := make([]string, 0, len(subs))
+	for i := len(subs) - 1; i >= 0; i-- { // reverse -> leaf-first
+		s := subs[i]
+		if !strings.HasSuffix(s, ".") || s == "." {
+			return "", false
+		}
+		labels = append(labels, strings.TrimSuffix(s, "."))
+	}
+	labels = append(labels, apex)
+	return strings.Join(labels, "."), true
+}
+
 // splitHost separates a host into its apex domain (last two labels) and the
 // subdomain labels (leaf-first, i.e. the order they appear in the host).
 func splitHost(host string) (apex string, subs []string, err error) {
@@ -105,25 +153,89 @@ func splitHost(host string) (apex string, subs []string, err error) {
 	return apex, subs, nil
 }
 
-// Run executes the deploy: for each host it creates the remote folder tree and
-// rsyncs Src into it.
-func Run(o Options) error {
-	info, err := os.Stat(o.Src)
-	if err != nil {
-		return fmt.Errorf("source %q: %w", o.Src, err)
+// Resolve fills in o.SSH and o.Jobs from the project/root config wherever they
+// were not given explicitly on the command line, then validates the result. It
+// is pure — the caller loads proj and root (via zipconfig) and passes them in,
+// so the resolution logic is unit-testable without touching the filesystem.
+//
+// Precedence, each field independently:
+//   - target: --ssh flag > project "target" > root "target" (a value matching a
+//     root "targets" name is expanded to its spec)
+//   - hosts:  -d flags > every key of the project deploy map
+//   - source: positional dir > the project deploy map entry for the host
+func Resolve(o *Options, proj zipconfig.ProjectConfig, root zipconfig.RootConfig) error {
+	// ---- target (--ssh) ----
+	spec := o.SSH
+	if spec == "" {
+		spec = proj.Target
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("source %q is not a directory", o.Src)
+	if spec == "" {
+		spec = root.Target
 	}
-	// Trailing slash => sync the directory's CONTENTS, not the dir itself.
-	src := strings.TrimRight(o.Src, "/") + "/"
+	if named, ok := root.Targets[spec]; ok {
+		spec = named
+	}
+	if spec == "" {
+		return fmt.Errorf("no deploy target: pass --ssh, set \"target\" in package.json's zipgo, or add a target to .zipgo.json")
+	}
+	o.SSH = spec
 
+	// ---- hosts ----
+	hosts := o.Hosts
+	fromMap := false
+	if len(hosts) == 0 {
+		if len(proj.Deploy) == 0 {
+			return fmt.Errorf("no deploy hosts: pass -d <host> or add a zipgo.deploy map to package.json")
+		}
+		for h := range proj.Deploy {
+			hosts = append(hosts, h)
+		}
+		sort.Strings(hosts)
+		fromMap = true
+	}
+
+	// ---- source per host ----
+	if o.Src != "" && fromMap && len(hosts) > 1 {
+		return fmt.Errorf("a positional source dir is ambiguous with %d mapped hosts; pass -d to pick one", len(hosts))
+	}
+	o.Jobs = nil
+	for _, h := range hosts {
+		src := o.Src
+		if src == "" {
+			src = proj.Deploy[h]
+		}
+		if src == "" {
+			return fmt.Errorf("no source folder for %q: pass a dir argument or add it to package.json zipgo.deploy", h)
+		}
+		o.Jobs = append(o.Jobs, Job{Host: h, Src: src})
+	}
+	return nil
+}
+
+// Run executes the deploy: for each resolved job it creates the remote folder
+// tree and rsyncs the job's source into it. Call Resolve first to populate
+// o.Jobs and o.SSH.
+func Run(o Options) error {
 	tgt, err := ParseTarget(o.SSH)
 	if err != nil {
 		return err
 	}
+	if len(o.Jobs) == 0 {
+		return fmt.Errorf("nothing to deploy (call Resolve first)")
+	}
 
-	for _, host := range o.Hosts {
+	for _, job := range o.Jobs {
+		host := job.Host
+		info, err := os.Stat(job.Src)
+		if err != nil {
+			return fmt.Errorf("source %q: %w", job.Src, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("source %q is not a directory", job.Src)
+		}
+		// Trailing slash => sync the directory's CONTENTS, not the dir itself.
+		src := strings.TrimRight(job.Src, "/") + "/"
+
 		remoteDir, err := RemoteDir(tgt.BaseDir, host)
 		if err != nil {
 			return err
@@ -196,7 +308,7 @@ func ParseArgs(args []string) (Options, error) {
 			o.Hosts = append(o.Hosts, a[len("-d="):])
 		case strings.HasPrefix(a, "--domain="):
 			o.Hosts = append(o.Hosts, a[len("--domain="):])
-		case a == "--ssh":
+		case a == "--ssh" || a == "--target":
 			v, err := next(&i, a)
 			if err != nil {
 				return o, err
@@ -204,6 +316,8 @@ func ParseArgs(args []string) (Options, error) {
 			o.SSH = v
 		case strings.HasPrefix(a, "--ssh="):
 			o.SSH = a[len("--ssh="):]
+		case strings.HasPrefix(a, "--target="):
+			o.SSH = a[len("--target="):]
 		case a == "--exclude":
 			v, err := next(&i, a)
 			if err != nil {
@@ -230,14 +344,8 @@ func ParseArgs(args []string) (Options, error) {
 		}
 	}
 
-	if o.Src == "" {
-		return o, fmt.Errorf("missing source directory")
-	}
-	if len(o.Hosts) == 0 {
-		return o, fmt.Errorf("missing -d <subdomains>.<domain>")
-	}
-	if o.SSH == "" {
-		return o, fmt.Errorf("missing --ssh user@host:/base/path")
-	}
+	// Note: missing src/-d/--ssh are NOT errors here — they may be supplied by
+	// the project package.json (zipgo.deploy) and root .zipgo.json (target).
+	// Resolve performs final validation once those configs are loaded.
 	return o, nil
 }

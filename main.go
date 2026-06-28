@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,28 +26,53 @@ import (
 	"zipgo/internal/builder"
 	"zipgo/internal/config"
 	"zipgo/internal/deploy"
+	"zipgo/internal/remote"
 	"zipgo/internal/service"
 	"zipgo/internal/sites"
+	"zipgo/internal/zipconfig"
 )
 
-const deployUsage = `Usage: zipgo deploy <dir> -d <subdomains>.<domain> [-d ...] --ssh user@host:/base/path
+const deployUsage = `Usage: zipgo deploy [dir] [-d <host>] [--ssh user@host:/base/path]
 
 Recursively creates the domain/subdomain folder tree (zipgo's trailing-dot
-convention) on the remote host and rsyncs <dir>'s contents into it.
+convention) on the remote host and rsyncs the source contents into it.
 
-  -d, --domain   target host, e.g. love-letters.game.gabvdl.xyz (repeatable)
-      --ssh      remote destination: user@host:/base/domains/path
+The target and the per-host source folders can come from config, so a fully
+configured project deploys with just 'zipgo deploy':
+  - root .zipgo.json (found by ascending from the cwd) provides the default
+    target, e.g. {"target": "user@host:/base/domains"}
+  - a project's package.json "zipgo" field maps hosts to source folders, e.g.
+    {"zipgo": {"deploy": {"app.dev.gabvdl.xyz": "dist"}}}
+
+  [dir]          explicit source dir (overrides the package.json mapping)
+  -d, --domain   target host, e.g. love-letters.game.gabvdl.xyz (repeatable;
+                 default: every host in the package.json deploy map)
+      --ssh, --target  remote destination (or a name from .zipgo.json "targets");
+                 default: project/root config target
       --exclude  rsync exclude pattern (repeatable)
-      --no-delete  do not mirror (keep remote files missing from <dir>)
+      --no-delete  do not mirror (keep remote files missing from the source)
       --include-subdomains  let the mirror also delete nested subdomain
                  folders (by default trailing-dot subdomain dirs are kept)
   -n, --dry-run  show what rsync would do; skip remote mkdir
 
-Example:
+Examples:
+  zipgo deploy                                 # all hosts from package.json
+  zipgo deploy -d app.dev.gabvdl.xyz           # one host, source from config
   zipgo deploy dist/ -d love-letters.game.gabvdl.xyz \
       --ssh gabrielvidal@100.74.118.12:/home/gabrielvidal/services/domains
   # -> /home/gabrielvidal/services/domains/gabvdl.xyz/game./love-letters.
   #    served at https://love-letters.game.gabvdl.xyz
+`
+
+const manageUsage = `Usage: zipgo ls [host] [--ssh user@host:/base/path]
+       zipgo info <host> [--ssh user@host:/base/path]
+
+Inspect what is deployed under the remote zipgo domains folder (the target is
+read from .zipgo.json unless --ssh/--target is given).
+
+  zipgo ls                 list every deployed site, grouped by domain
+  zipgo ls <host>          list the contents of one site's remote folder
+  zipgo info <host>        show a site's remote path, size, file count, mtime
 `
 
 func main() {
@@ -77,8 +103,37 @@ func main() {
 			fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, deployUsage)
 			os.Exit(2)
 		}
+		proj, root := loadConfigs()
+		if err := deploy.Resolve(&opts, proj, root); err != nil {
+			fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, deployUsage)
+			os.Exit(2)
+		}
 		if err := deploy.Run(opts); err != nil {
 			log.Fatalf("❌  %v\n", err)
+		}
+		return
+	case "ls", "info":
+		host, ssh, err := parseManageArgs(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, manageUsage)
+			os.Exit(2)
+		}
+		target, err := resolveTarget(ssh)
+		if err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		if sub == "info" {
+			if host == "" {
+				fmt.Fprintf(os.Stderr, "❌  info requires a host\n\n%s", manageUsage)
+				os.Exit(2)
+			}
+			if err := remote.Info(target, host); err != nil {
+				log.Fatalf("❌  %v\n", err)
+			}
+		} else {
+			if err := remote.List(target, host); err != nil {
+				log.Fatalf("❌  %v\n", err)
+			}
 		}
 		return
 	case "help", "--help", "-h":
@@ -87,11 +142,15 @@ func main() {
 		fmt.Println("Commands:")
 		fmt.Println("  serve    Start the server (default)")
 		fmt.Println("  deploy   rsync a local dir to a remote zipgo host over SSH")
+		fmt.Println("  ls       list sites deployed on the remote target")
+		fmt.Println("  info     show a deployed site's remote path, size and mtime")
 		fmt.Println("  enable   Install and start the systemd user service")
 		fmt.Println("  disable  Stop and remove the systemd user service")
 		fmt.Println("  status   Show service status")
 		fmt.Println()
 		fmt.Print(deployUsage)
+		fmt.Println()
+		fmt.Print(manageUsage)
 		return
 	case "serve", "":
 		// fall through to server startup
@@ -234,6 +293,82 @@ func main() {
 
 	fmt.Println("\n🛑  Shutting down...")
 	caddy.Stop()
+}
+
+// loadConfigs discovers the project (package.json "zipgo") and root
+// (.zipgo.json) configs by ascending from the current directory. Missing or
+// unreadable configs degrade to zero values (a hard parse error aborts).
+func loadConfigs() (zipconfig.ProjectConfig, zipconfig.RootConfig) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("❌  %v\n", err)
+	}
+	_, proj, _, err := zipconfig.FindProject(cwd)
+	if err != nil {
+		log.Fatalf("❌  %v\n", err)
+	}
+	_, root, _, err := zipconfig.FindRoot(cwd)
+	if err != nil {
+		log.Fatalf("❌  %v\n", err)
+	}
+	return proj, root
+}
+
+// resolveTarget builds the deploy.Target for the management subcommands from an
+// explicit --ssh spec (which may be a name in .zipgo.json "targets"), falling
+// back to the root config's default target.
+func resolveTarget(ssh string) (deploy.Target, error) {
+	_, root, _, err := zipconfig.FindRoot(mustCwd())
+	if err != nil {
+		return deploy.Target{}, err
+	}
+	spec := ssh
+	if spec == "" {
+		spec = root.Target
+	}
+	if named, ok := root.Targets[spec]; ok {
+		spec = named
+	}
+	if spec == "" {
+		return deploy.Target{}, fmt.Errorf("no target: pass --ssh user@host:/base or add a target to .zipgo.json")
+	}
+	return deploy.ParseTarget(spec)
+}
+
+func mustCwd() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("❌  %v\n", err)
+	}
+	return cwd
+}
+
+// parseManageArgs parses the args for `ls`/`info`: an optional positional host
+// and an optional --ssh/--target override.
+func parseManageArgs(args []string) (host, ssh string, err error) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--ssh" || a == "--target":
+			i++
+			if i >= len(args) {
+				return "", "", fmt.Errorf("%s requires a value", a)
+			}
+			ssh = args[i]
+		case strings.HasPrefix(a, "--ssh="):
+			ssh = a[len("--ssh="):]
+		case strings.HasPrefix(a, "--target="):
+			ssh = a[len("--target="):]
+		case strings.HasPrefix(a, "-"):
+			return "", "", fmt.Errorf("unknown flag %q", a)
+		default:
+			if host != "" {
+				return "", "", fmt.Errorf("unexpected argument %q", a)
+			}
+			host = a
+		}
+	}
+	return host, ssh, nil
 }
 
 // watchAndReload watches domainsDir for filesystem changes and calls reload()

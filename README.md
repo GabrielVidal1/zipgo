@@ -161,6 +161,8 @@ cp -r dist/ .zipgo/yourdomain.com/app./
 ```bash
 zipgo serve     # start the server (default when no command is given)
 zipgo deploy    # rsync a local dir to a remote zipgo host over SSH
+zipgo ls        # list sites deployed on the remote target
+zipgo info      # show a deployed site's remote path, size and mtime
 zipgo enable    # install and start the systemd user service
 zipgo disable   # stop and remove the systemd user service
 zipgo status    # show service status
@@ -181,8 +183,58 @@ zipgo deploy dist/ -d love-letters.game.gabvdl.xyz \
 ```
 
 `-d/--domain` is repeatable (deploy the same build to several hosts). Flags:
-`--ssh user@host:/base/path` (required), `--exclude <pat>` (repeatable),
+`--ssh/--target user@host:/base/path`, `--exclude <pat>` (repeatable),
 `--no-delete` (don't mirror), `-n/--dry-run`.
+
+#### Config-driven deploy
+
+The target and the per-host source folders can be read from config, so a
+configured project deploys with a bare `zipgo deploy`:
+
+- **Root config** — a `.zipgo.json` file, found by ascending the directory tree
+  from the current dir (like `git`/`.npmrc`), supplies the default target:
+
+  ```json
+  { "target": "gabrielvidal@100.74.118.12:/home/gabrielvidal/services/domains" }
+  ```
+
+  Optional `"targets": { "name": "user@host:/base" }` defines named targets a
+  project can reference.
+
+- **Project config** — a `"zipgo"` key in the project's `package.json` maps each
+  host to the local folder deployed to it (paths relative to `package.json`):
+
+  ```json
+  "zipgo": {
+    "deploy": {
+      "www.gabvdl.xyz":      "dist/apex",
+      "www.dev.gabvdl.xyz":  "dist/dev",
+      "www.game.gabvdl.xyz": "dist/game"
+    }
+  }
+  ```
+
+Resolution precedence (each field independently): `--ssh` flag → project
+`target` → root `target`; `-d` hosts → every key of the deploy map; positional
+`dir` → the map entry for the host. With both files present:
+
+```bash
+zipgo deploy                       # deploy every host in the map
+zipgo deploy -d www.dev.gabvdl.xyz # one host, its mapped folder, default target
+```
+
+The fully-explicit `dist/ -d host --ssh …` form keeps working unchanged.
+
+### `zipgo ls` / `zipgo info`
+
+Read-only inspection of what's deployed under the remote target (resolved from
+`.zipgo.json`, or `--ssh`/`--target`):
+
+```bash
+zipgo ls                            # every deployed site, grouped by domain
+zipgo ls love-letters.game.gabvdl.xyz   # one site's remote folder contents
+zipgo info love-letters.game.gabvdl.xyz # remote path, size, file count, mtime
+```
 
 ---
 
