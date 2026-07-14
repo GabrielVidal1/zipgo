@@ -77,6 +77,60 @@ func TestRedirectConfig(t *testing.T) {
 	}
 }
 
+func TestReadConfigHeaders(t *testing.T) {
+	dir := t.TempDir()
+
+	// No headers key → nil map, and the site is otherwise untouched.
+	write(t, dir, `{"enable": true}`)
+	c, err := readConfig(dir)
+	if err != nil {
+		t.Fatalf("no headers: unexpected error %v", err)
+	}
+	if len(c.Headers) != 0 {
+		t.Fatalf("no headers: want empty, got %v", c.Headers)
+	}
+
+	// Headers map → parsed verbatim (canonicalisation happens in the builder).
+	write(t, dir, `{"headers": {"Cache-Control": "public, max-age=3600", "x-hi": "there"}}`)
+	c, err = readConfig(dir)
+	if err != nil {
+		t.Fatalf("headers: unexpected error %v", err)
+	}
+	if c.Headers["Cache-Control"] != "public, max-age=3600" || c.Headers["x-hi"] != "there" {
+		t.Fatalf("headers not parsed: %v", c.Headers)
+	}
+
+	// Wrong shape (not an object of strings) → hard error, like any malformed
+	// config: the typo surfaces instead of being silently dropped.
+	for _, body := range []string{
+		`{"headers": "no"}`,
+		`{"headers": {"Cache-Control": 3600}}`,
+		`{"headers": {"Bad Name": "x"}}`,
+		`{"headers": {"X-Inject": "a\nb"}}`,
+	} {
+		write(t, dir, body)
+		if _, err := readConfig(dir); err == nil {
+			t.Errorf("%s should be rejected", body)
+		}
+	}
+}
+
+func TestValidateHeaders(t *testing.T) {
+	if err := ValidateHeaders(map[string]string{"Cache-Control": "no-store", "X-Empty": ""}); err != nil {
+		t.Errorf("valid headers rejected: %v", err)
+	}
+	for name, h := range map[string]map[string]string{
+		"space in name": {"Cache Control": "no-store"},
+		"colon in name": {"X-A:B": "v"},
+		"empty name":    {"": "v"},
+		"newline value": {"X-A": "a\r\nSet-Cookie: x"},
+	} {
+		if err := ValidateHeaders(h); err == nil {
+			t.Errorf("%s: want error, got nil", name)
+		}
+	}
+}
+
 func TestDiscoverReadsConfig(t *testing.T) {
 	dir := t.TempDir()
 	domain := filepath.Join(dir, "example.com")
