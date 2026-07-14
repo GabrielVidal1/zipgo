@@ -10,6 +10,7 @@ package doctor
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -105,11 +106,12 @@ var knownConfigKeys = map[string]bool{
 	"redirectStatus": true,
 	"allowHttp":      true,
 	"basicAuth":      true,
+	"headers":        true,
 }
 
 // knownKeyList is the human list of keys printed as a hint next to an unknown
 // key, in a stable order.
-const knownKeyList = "enable, rewrite, redirect, redirectStatus, allowHttp, basicAuth"
+const knownKeyList = "enable, rewrite, redirect, redirectStatus, allowHttp, basicAuth, headers"
 
 // redirectStatuses are the status codes "redirectStatus" accepts: 301/308
 // permanent, 302/307 temporary.
@@ -263,8 +265,12 @@ func (r *Report) checkConfig(dir, host string) (sites.Config, bool) {
 		return sites.Config{}, true
 	}
 
-	var cfg sites.Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	// Decode to a raw key → value map first. It separates "this isn't JSON at
+	// all" (nothing else can be checked) from "one key has the wrong type"
+	// (every other key still can be), and it is what the unknown-key and
+	// "headers" checks below read.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
 		r.add(Finding{
 			Level: Error, Host: host, Path: path,
 			Msg:  fmt.Sprintf("%s is not valid JSON: %v", sites.ConfigFileName, err),
@@ -273,29 +279,43 @@ func (r *Report) checkConfig(dir, host string) (sites.Config, bool) {
 		return sites.Config{}, true
 	}
 
+	// A typed decode failure means a known key holds the wrong kind of value
+	// (e.g. "headers": "no"). The real parser hard-fails on it exactly like
+	// malformed JSON, so it is an error — but we keep walking the keys below to
+	// report *which* one, rather than stopping at Go's decoder message.
+	var cfg sites.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		r.add(Finding{
+			Level: Error, Host: host, Path: path,
+			Msg:  fmt.Sprintf("%s has a key with the wrong type of value: %v", sites.ConfigFileName, err),
+			Hint: "zipgo refuses to reload while this file is malformed — every site stays on the last good config",
+		})
+	}
+
 	// Unknown keys are dropped on the floor by the real parser, so a typo is
 	// invisible: "enabled": false leaves the site very much enabled.
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err == nil {
-		var unknown []string
-		for k := range raw {
-			if !knownConfigKeys[k] {
-				unknown = append(unknown, k)
-			}
+	var unknown []string
+	for k := range raw {
+		if !knownConfigKeys[k] {
+			unknown = append(unknown, k)
 		}
-		sort.Strings(unknown)
-		for _, k := range unknown {
-			f := Finding{
-				Level: Warn, Host: host, Path: path,
-				Msg: fmt.Sprintf("unknown key %q in %s is ignored", k, sites.ConfigFileName),
-			}
-			if guess := nearestKey(k); guess != "" {
-				f.Hint = fmt.Sprintf("did you mean %q?", guess)
-			} else {
-				f.Hint = "known keys: " + knownKeyList
-			}
-			r.add(f)
+	}
+	sort.Strings(unknown)
+	for _, k := range unknown {
+		f := Finding{
+			Level: Warn, Host: host, Path: path,
+			Msg: fmt.Sprintf("unknown key %q in %s is ignored", k, sites.ConfigFileName),
 		}
+		if guess := nearestKey(k); guess != "" {
+			f.Hint = fmt.Sprintf("did you mean %q?", guess)
+		} else {
+			f.Hint = "known keys: " + knownKeyList
+		}
+		r.add(f)
+	}
+
+	if h, ok := raw["headers"]; ok {
+		r.checkHeaders(h, host, path)
 	}
 
 	if cfg.Rewrite != "" {
@@ -418,6 +438,64 @@ func invalidBcrypt(s string) string {
 		return fmt.Sprintf("not a valid bcrypt hash (%v)", err)
 	}
 	return ""
+}
+
+// computedHeaders are response headers the server (file_server or reverse_proxy)
+// works out for itself. Overriding them from .zipgoconfig.json does not do what
+// the author expects and can corrupt the response framing, so doctor warns.
+var computedHeaders = map[string]bool{
+	"Content-Length":    true,
+	"Transfer-Encoding": true,
+	"Connection":        true,
+}
+
+// checkHeaders validates the "headers" value of a .zipgoconfig.json. It is
+// checked from the raw JSON rather than the decoded Config so a wrong-shaped
+// value ("headers": "no", or a nested object) is reported as a headers problem
+// instead of surfacing as Go's decoder error on the whole file.
+func (r *Report) checkHeaders(rawHeaders json.RawMessage, host, path string) {
+	var h map[string]string
+	if err := json.Unmarshal(rawHeaders, &h); err != nil {
+		r.add(Finding{
+			Level: Error, Host: host, Path: path,
+			Msg: fmt.Sprintf("%q must be an object mapping header names to string values", "headers"),
+			Hint: "e.g. \"headers\": {\"Cache-Control\": \"public, max-age=3600\"} — " +
+				"numbers and booleans must be quoted",
+		})
+		return
+	}
+
+	names := make([]string, 0, len(h))
+	for name := range h {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if bad := sites.InvalidHeaderName(name); bad != "" {
+			r.add(Finding{
+				Level: Error, Host: host, Path: path,
+				Msg:  fmt.Sprintf("header name %q is not usable: %s", name, bad),
+				Hint: "a header name is a token: letters, digits and -_ (no spaces or colon)",
+			})
+			continue
+		}
+		if bad := sites.InvalidHeaderValue(h[name]); bad != "" {
+			r.add(Finding{
+				Level: Error, Host: host, Path: path,
+				Msg:  fmt.Sprintf("value of header %q is not usable: %s", name, bad),
+				Hint: "header values are a single line",
+			})
+			continue
+		}
+		if computedHeaders[http.CanonicalHeaderKey(name)] {
+			r.add(Finding{
+				Level: Warn, Host: host, Path: path,
+				Msg:  fmt.Sprintf("header %q is computed by the server; setting it can break the response", name),
+				Hint: "remove it — zipgo sets the response framing headers itself",
+			})
+		}
+	}
 }
 
 // checkContent verifies an enabled site has something to serve.

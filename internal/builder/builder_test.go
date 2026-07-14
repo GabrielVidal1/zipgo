@@ -211,7 +211,7 @@ func TestProxyHandlerTLS(t *testing.T) {
 
 func TestSecurityHeaders(t *testing.T) {
 	// Default (no authorized origins): clickjacking-safe X-Frame-Options, no CSP.
-	def := securityHeaders("")["response"].(obj)["set"].(obj)
+	def := securityHeaders("", nil)["response"].(obj)["set"].(obj)
 	if got := def["X-Frame-Options"]; !reflect.DeepEqual(got, arr{"SAMEORIGIN"}) {
 		t.Fatalf("default X-Frame-Options: want [SAMEORIGIN], got %v", got)
 	}
@@ -221,7 +221,7 @@ func TestSecurityHeaders(t *testing.T) {
 
 	// With authorized origins: CSP frame-ancestors, and X-Frame-Options dropped
 	// (the two conflict).
-	set := securityHeaders("https://*.gabvdl.xyz")["response"].(obj)["set"].(obj)
+	set := securityHeaders("https://*.gabvdl.xyz", nil)["response"].(obj)["set"].(obj)
 	if _, ok := set["X-Frame-Options"]; ok {
 		t.Fatal("with origins: X-Frame-Options must be omitted")
 	}
@@ -328,5 +328,70 @@ func TestGuardMetaRoute(t *testing.T) {
 	}
 	if got := h[1].(obj)["handler"]; got != "static_response" {
 		t.Fatalf("second handler = %v, want static_response", got)
+	}
+}
+
+// The .zipgoconfig.json "headers" map is *merged into* the security headers:
+// it adds its own, may override a default by name, but never drops the rest.
+func TestSecurityHeadersCustom(t *testing.T) {
+	h := securityHeaders("", map[string]string{
+		"Cache-Control":               "public, max-age=31536000, immutable",
+		"access-control-allow-origin": "*",             // canonicalised
+		"X-XSS-Protection":            "1; mode=block", // overrides a default
+		"Referrer-Policy":             "",              // empty → delete
+	})
+	set := h["response"].(obj)["set"].(obj)
+
+	// Added.
+	if got := set["Cache-Control"]; !reflect.DeepEqual(got, arr{"public, max-age=31536000, immutable"}) {
+		t.Errorf("Cache-Control: got %v", got)
+	}
+	// Canonicalised, so the header goes out as Access-Control-Allow-Origin.
+	if got := set["Access-Control-Allow-Origin"]; !reflect.DeepEqual(got, arr{"*"}) {
+		t.Errorf("Access-Control-Allow-Origin: got %v", got)
+	}
+	// Overrides the default of the same name (and only that one).
+	if got := set["X-XSS-Protection"]; !reflect.DeepEqual(got, arr{"1; mode=block"}) {
+		t.Errorf("X-XSS-Protection override: got %v", got)
+	}
+	// Empty value → deleted from the defaults and from the upstream response.
+	if _, ok := set["Referrer-Policy"]; ok {
+		t.Error("Referrer-Policy: empty value should remove the header")
+	}
+	if got := h["response"].(obj)["delete"]; !reflect.DeepEqual(got, arr{"Referrer-Policy"}) {
+		t.Errorf("delete list: got %v", got)
+	}
+	// Untouched defaults survive the merge — this is the "merge, not clobber" bit.
+	if got := set["X-Content-Type-Options"]; !reflect.DeepEqual(got, arr{"nosniff"}) {
+		t.Errorf("X-Content-Type-Options should survive: got %v", got)
+	}
+	if got := set["X-Frame-Options"]; !reflect.DeepEqual(got, arr{"SAMEORIGIN"}) {
+		t.Errorf("X-Frame-Options should survive: got %v", got)
+	}
+	if got := set["Permissions-Policy"]; got == nil {
+		t.Error("Permissions-Policy should survive")
+	}
+
+	// No custom headers → no delete key at all (config stays as it was).
+	if _, ok := securityHeaders("", nil)["response"].(obj)["delete"]; ok {
+		t.Error("no custom headers: should not emit a delete list")
+	}
+}
+
+// A site with custom headers gets them on both the file and the proxy route.
+func TestCustomHeadersOnBothHandlers(t *testing.T) {
+	cfg := sites.Config{Headers: map[string]string{"Cache-Control": "no-store"}}
+
+	fileSub := fileHandler(t.TempDir(), false, "", nil, "", cfg.Headers)
+	fileHdr := fileSub["routes"].(arr)[0].(obj)["handle"].(arr)[0].(obj)
+	if got := fileHdr["response"].(obj)["set"].(obj)["Cache-Control"]; !reflect.DeepEqual(got, arr{"no-store"}) {
+		t.Errorf("file route: Cache-Control not applied, got %v", got)
+	}
+
+	cfg.Rewrite = "localhost:8080"
+	proxySub := proxyHandler(sites.Site{Config: cfg}, "")
+	proxyHdr := proxySub["routes"].(arr)[0].(obj)["handle"].(arr)[0].(obj)
+	if got := proxyHdr["response"].(obj)["set"].(obj)["Cache-Control"]; !reflect.DeepEqual(got, arr{"no-store"}) {
+		t.Errorf("proxy route: Cache-Control not applied, got %v", got)
 	}
 }

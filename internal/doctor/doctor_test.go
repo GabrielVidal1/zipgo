@@ -104,6 +104,61 @@ func TestCheck(t *testing.T) {
 			wantLevel: Warn,
 		},
 		{
+			name: "a valid headers map is accepted",
+			files: map[string]string{
+				"example.com/index.html": "<html></html>",
+				"example.com/.zipgoconfig.json": `{"headers": {"Cache-Control": "public, max-age=3600",
+					"Access-Control-Allow-Origin": "*", "X-Drop-Me": ""}}`,
+			},
+		},
+		{
+			name: "headers that is not an object is an error",
+			files: map[string]string{
+				"example.com/index.html":        "<html></html>",
+				"example.com/.zipgoconfig.json": `{"headers": "Cache-Control: no-store"}`,
+			},
+			wantMsg:   `"headers" must be an object`,
+			wantLevel: Error,
+			wantHost:  "example.com",
+		},
+		{
+			name: "a non-string header value is an error",
+			files: map[string]string{
+				"example.com/index.html":        "<html></html>",
+				"example.com/.zipgoconfig.json": `{"headers": {"Cache-Control": 3600}}`,
+			},
+			wantMsg:   `"headers" must be an object`,
+			wantLevel: Error,
+		},
+		{
+			name: "an unusable header name is an error",
+			files: map[string]string{
+				"example.com/index.html":        "<html></html>",
+				"example.com/.zipgoconfig.json": `{"headers": {"Cache Control": "no-store"}}`,
+			},
+			wantMsg:   `header name "Cache Control" is not usable`,
+			wantLevel: Error,
+			wantHost:  "example.com",
+		},
+		{
+			name: "a newline in a header value is an error",
+			files: map[string]string{
+				"example.com/index.html":        "<html></html>",
+				"example.com/.zipgoconfig.json": `{"headers": {"X-A": "a\nSet-Cookie: b=1"}}`,
+			},
+			wantMsg:   `value of header "X-A" is not usable`,
+			wantLevel: Error,
+		},
+		{
+			name: "overriding a server-computed header warns",
+			files: map[string]string{
+				"example.com/index.html":        "<html></html>",
+				"example.com/.zipgoconfig.json": `{"headers": {"content-length": "10"}}`,
+			},
+			wantMsg:   `is computed by the server`,
+			wantLevel: Warn,
+		},
+		{
 			name: "domain folder without a dot is ignored, with a warning",
 			files: map[string]string{
 				"example.com/index.html": "<html></html>",

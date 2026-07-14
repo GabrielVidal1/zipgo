@@ -131,6 +131,9 @@ hides it). All keys are optional:
                                    //   301/308 permanent, 302/307 temporary)
   "allowHttp": false,              // true → also serve over plain HTTP (:80)
                                    //        instead of redirecting to HTTPS
+  "headers": {                     // extra response headers, merged into the
+    "Cache-Control": "public, max-age=31536000, immutable"
+  },                               //   security headers zipgo already sends
   "basicAuth": {                   // put the whole site behind a password
     "alice": "$2a$14$Zkx19XLiW…"   //   username → *bcrypt hash*, never a
   }                                //   plaintext password
@@ -161,6 +164,34 @@ hides it). All keys are optional:
 - **`allowHttp: true`** serves the site on port 80 as well as 443 (by default
   every host is 301-redirected to HTTPS). No effect in localhost mode, which is
   already HTTP-only.
+- **`headers`** sets extra response headers on every request to the site —
+  caching, CORS, anything — without putting a proxy in front of it. They are
+  **merged into** the security headers zipgo already sends (`X-Frame-Options`,
+  `X-Content-Type-Options`, `Referrer-Policy`, `X-XSS-Protection`,
+  `Permissions-Policy`), not a replacement for them: an entry whose name matches
+  one of those defaults overrides that one header and leaves the rest alone.
+  Header names are case-insensitive (`cache-control` and `Cache-Control` are the
+  same header), and an **empty value removes** a header instead of sending it
+  blank:
+
+  ```jsonc
+  {
+    "headers": {
+      "Cache-Control": "public, max-age=31536000, immutable",  // add
+      "Access-Control-Allow-Origin": "https://app.example.com",// CORS, no proxy
+      "X-XSS-Protection": "1; mode=block",                     // override a default
+      "Referrer-Policy": ""                                    // remove a default
+    }
+  }
+  ```
+
+  A `headers` value that isn't an object of strings, a name that isn't a valid
+  header token, or a value containing a newline is a hard error — the same
+  contract as any malformed `.zipgoconfig.json` (see below). `zipgo doctor`
+  points at the file.
+
+  Headers apply to every kind of site: on a `rewrite` proxy they override
+  whatever the upstream sent, and on a `redirect` they ride along with the 301/302.
 - **`basicAuth`** puts the site behind HTTP basic auth — one file turns a
   staging subdomain into a password-protected one. Keys are usernames, values
   are **bcrypt hashes** (`caddy hash-password`, or `htpasswd -nbB alice s3cret`
@@ -340,6 +371,8 @@ a folder passed as an argument) and reports, per host:
 | …unless the folder only holds subdomains, which is a legitimate shape | warning |
 | `.zipgoconfig.json` is not valid JSON — **this blocks every reload** | error |
 | Unknown key in `.zipgoconfig.json` (`"enabled"` instead of `"enable"`) | warning |
+| `headers` isn't an object of strings, or a header name/value is unusable | error |
+| A `headers` entry overriding a header the server computes (`Content-Length`) | warning |
 | Folder name isn't a valid domain / hostname | error |
 | Folder in the domains root with no dot — silently ignored by the server | warning |
 | Subdomain folder that forgot its trailing dot (`docs.example.com`) | warning |

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -45,6 +46,17 @@ type Config struct {
 	// It applies to static, SPA and rewrite (proxy) sites alike, and to the
 	// site's own sub-domains-meta endpoint.
 	BasicAuth map[string]string `json:"basicAuth,omitempty"`
+	// Headers are extra response headers merged into the security-headers
+	// handler zipgo already applies to every route (file and proxy alike), so a
+	// site can set caching or CORS without a proxy in front:
+	//
+	//	{"headers": {"Cache-Control": "public, max-age=31536000, immutable"}}
+	//
+	// Names are canonicalised, so "cache-control" and "Cache-Control" are the
+	// same header. An entry whose name matches one zipgo sends by default
+	// overrides it; every other default is left alone. An empty value removes
+	// the header instead of sending it blank.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // DefaultRedirectStatus is the status code used for a "redirect" site that does
@@ -71,6 +83,61 @@ func (c Config) Protected() bool { return len(c.BasicAuth) > 0 }
 // HTTPAllowed reports whether the site opts into being served over plain HTTP
 // (default false).
 func (c Config) HTTPAllowed() bool { return c.AllowHTTP != nil && *c.AllowHTTP }
+
+// InvalidHeaderName returns a human reason when name cannot be used as an HTTP
+// response header name, or "" when it is fine. A header name is a token
+// (RFC 9110 §5.1): no spaces, no colon, no control or separator characters.
+// Both the parser (a hard error, so a typo cannot reach Caddy) and doctor use
+// this, so they always agree on what is valid.
+func InvalidHeaderName(name string) string {
+	if name == "" {
+		return "empty header name"
+	}
+	for _, r := range name {
+		if r <= ' ' || r >= 0x7f || strings.ContainsRune("()<>@,;:\\\"/[]?={}", r) {
+			return fmt.Sprintf("contains %q, which is not allowed in a header name", r)
+		}
+	}
+	return ""
+}
+
+// InvalidHeaderValue returns a human reason when value cannot be sent as a
+// header value, or "" when it is fine. The only hard rule is no CR/LF: a
+// newline in a header value is a response-splitting injection.
+func InvalidHeaderValue(value string) string {
+	if strings.ContainsAny(value, "\r\n") {
+		return "contains a newline (header injection)"
+	}
+	return ""
+}
+
+// ValidateHeaders checks every entry of a Headers map, returning the first
+// problem found (names are checked in sorted order so the error is stable).
+func ValidateHeaders(h map[string]string) error {
+	names := make([]string, 0, len(h))
+	for name := range h {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	// seen keys the names case-insensitively: header names are case-insensitive
+	// on the wire, so two entries differing only in case are one header with two
+	// values and which one wins would depend on Go's map iteration order.
+	seen := map[string]string{}
+	for _, name := range names {
+		if bad := InvalidHeaderName(name); bad != "" {
+			return fmt.Errorf("header %q: %s", name, bad)
+		}
+		if bad := InvalidHeaderValue(h[name]); bad != "" {
+			return fmt.Errorf("header %q: %s", name, bad)
+		}
+		lower := strings.ToLower(name)
+		if first, dup := seen[lower]; dup {
+			return fmt.Errorf("header %q is also set as %q — header names are case-insensitive", name, first)
+		}
+		seen[lower] = name
+	}
+	return nil
+}
 
 type Site struct {
 	// Labels is the subdomain label chain, leaf-first. Empty means the apex
@@ -173,6 +240,9 @@ func readConfig(dir string) (Config, error) {
 	}
 	var c Config
 	if err := json.Unmarshal(data, &c); err != nil {
+		return Config{}, fmt.Errorf("parsing %s: %w", filepath.Join(dir, ConfigFileName), err)
+	}
+	if err := ValidateHeaders(c.Headers); err != nil {
 		return Config{}, fmt.Errorf("parsing %s: %w", filepath.Join(dir, ConfigFileName), err)
 	}
 	return c, nil
