@@ -23,7 +23,6 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
-- [zipgo] Structured access logs (JSON to stdout) behind `ZIPGO_LOG_FORMAT=json` — @2026-07-14T23:16:14Z
 
 ## Target
 
@@ -125,9 +124,14 @@ Ordered roughly by value. Each item is one session of work.
       parent's), and only a 404 is dressed up — a 403/500 is still Caddy's. An
       SPA (200 index.html fallback) and `rewrite`/`redirect` sites can't serve
       one, so `doctor` warns when a `404.html` is dead weight in one of those.
-- [ ] Structured access logs (JSON to stdout, one line per request with host,
+- [x] Structured access logs (JSON to stdout, one line per request with host,
       path, status, duration) behind a `ZIPGO_LOG_FORMAT=json` env var, so the
       homelab's Loki can ingest them.
+      Every content HTTP server routes its per-request logs to a dedicated
+      `access` logger encoded as JSON on stdout (tagged
+      `http.log.access.access`); the loopback metrics server is left out so
+      Prometheus scrapes don't flood the stream. Off by default (Caddy errors
+      only). Needed the `caddy/modules/logging` import for the JSON encoder.
 - [ ] Unit tests for the discovery + builder core (`internal/sites`,
       `internal/builder`): the trailing-dot recursion, SPA detection,
       `enable:false`, and `rewrite` each get a table test. This is the safety net
