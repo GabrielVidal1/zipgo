@@ -25,6 +25,7 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 
 - [zipgo] Redirect support in .zipgoconfig.json (redirect + redirectStatus) — @2026-07-14T18:50Z
 - [zipgo] Custom headers in .zipgoconfig.json (headers map merged into the security-headers handler) — @2026-07-14T18:51Z
+- [zipgo] Basic-auth in .zipgoconfig.json (basicAuth map of user → bcrypt hash) — @2026-07-14T18:53Z
 
 ## Target
 
