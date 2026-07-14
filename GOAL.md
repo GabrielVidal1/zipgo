@@ -24,6 +24,7 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
      yours in the same commit that ticks its checkbox. -->
 
 - [zipgo] Redirect support in .zipgoconfig.json (redirect + redirectStatus) — @2026-07-14T18:50Z
+- [zipgo] Custom headers in .zipgoconfig.json (headers map merged into the security-headers handler) — @2026-07-14T18:51Z
 
 ## Target
 
