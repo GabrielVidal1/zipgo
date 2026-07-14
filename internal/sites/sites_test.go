@@ -164,3 +164,106 @@ func write(t *testing.T, dir, body string) {
 		t.Fatal(err)
 	}
 }
+
+// A 404.html in a site folder is discovered, under whatever case it is spelled.
+func TestDetectNotFound(t *testing.T) {
+	cases := []struct {
+		name string
+		file string // "" → no file at all
+		want string
+	}{
+		{"no page", "", ""},
+		{"canonical name", "404.html", "404.html"},
+		{"shouty build tool", "404.HTML", "404.HTML"},
+		{"unrelated file", "index.html", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.file != "" {
+				touch(t, dir, tc.file)
+			}
+			if got := DetectNotFound(dir); got != tc.want {
+				t.Errorf("DetectNotFound = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// A *folder* called 404.html is not a page.
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, NotFoundFileName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := DetectNotFound(dir); got != "" {
+		t.Errorf("a directory named 404.html is not a page, got %q", got)
+	}
+}
+
+// HasNotFoundPage gates the custom page on the site actually being able to 404:
+// only a static site reaches the file server with a path that matches nothing.
+func TestHasNotFoundPage(t *testing.T) {
+	cases := []struct {
+		name string
+		site Site
+		want bool
+	}{
+		{"static site with a page", Site{NotFoundPage: "404.html"}, true},
+		{"static site without one", Site{}, false},
+		{"spa falls back to index.html", Site{NotFoundPage: "404.html", IsSPA: true}, false},
+		{"proxy never hits the file server", Site{
+			NotFoundPage: "404.html",
+			Config:       Config{Rewrite: "localhost:8080"},
+		}, false},
+		{"redirect never hits the file server", Site{
+			NotFoundPage: "404.html",
+			Config:       Config{Redirect: "https://elsewhere.com"},
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.site.HasNotFoundPage(); got != tc.want {
+				t.Errorf("HasNotFoundPage = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Discovery records the 404 page on the site it belongs to, and only there.
+func TestDiscoverNotFoundPage(t *testing.T) {
+	domain := t.TempDir()
+	touch(t, domain, "index.html")
+	touch(t, domain, "404.html")
+
+	sub := filepath.Join(domain, "docs.")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	touch(t, sub, "index.html") // no 404 page of its own
+
+	found, err := Discover(domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range found {
+		switch {
+		case s.IsApex():
+			if s.NotFoundPage != "404.html" || !s.HasNotFoundPage() {
+				t.Errorf("apex: NotFoundPage = %q, HasNotFoundPage = %v",
+					s.NotFoundPage, s.HasNotFoundPage())
+			}
+		default:
+			if s.NotFoundPage != "" {
+				// The child must not inherit the parent's page: each folder is its
+				// own site, and a subdomain with no 404.html has no custom 404.
+				t.Errorf("docs.: inherited a 404 page (%q) from the apex", s.NotFoundPage)
+			}
+		}
+	}
+}
+
+func touch(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -14,6 +14,12 @@ import (
 // file_server hides it).
 const ConfigFileName = ".zipgoconfig.json"
 
+// NotFoundFileName is the page a static site can drop in its folder to replace
+// the default plain-text 404 body. It is served, with a 404 status, for any
+// request that matches no file. An SPA never 404s (unknown paths fall back to
+// index.html), so the file only means something for a static site.
+const NotFoundFileName = "404.html"
+
 // Config holds the optional per-site settings read from .zipgoconfig.json.
 // Pointer fields distinguish "unset" (nil → use the default) from an explicit
 // true/false in the file.
@@ -146,9 +152,23 @@ type Site struct {
 	Labels []string
 	Path   string
 	IsSPA  bool
+	// NotFoundPage is the site's custom 404 page as it is named on disk (see
+	// NotFoundFileName), or "" when the folder has none. The name is kept
+	// verbatim rather than assumed, so the rewrite the builder emits points at
+	// the file that actually exists.
+	NotFoundPage string
 	// Config is the per-site settings from .zipgoconfig.json (zero value when
 	// the file is absent).
 	Config Config
+}
+
+// HasNotFoundPage reports whether the site serves a custom 404 page: it has one
+// on disk, and it is a site that can 404 at all. An SPA is excluded — every
+// unknown path there is a client-side route and falls back to index.html — as
+// are proxy and redirect sites, which never reach the file server.
+func (s Site) HasNotFoundPage() bool {
+	return s.NotFoundPage != "" && !s.IsSPA &&
+		s.Config.Rewrite == "" && s.Config.Redirect == ""
 }
 
 // IsApex reports whether this site is served at the bare domain.
@@ -192,10 +212,11 @@ func Discover(domainDir string) ([]Site, error) {
 			return err
 		}
 		result = append(result, Site{
-			Labels: append([]string{}, labels...),
-			Path:   dir,
-			IsSPA:  detectSPA(dir),
-			Config: cfg,
+			Labels:       append([]string{}, labels...),
+			Path:         dir,
+			IsSPA:        DetectSPA(dir),
+			NotFoundPage: DetectNotFound(dir),
+			Config:       cfg,
 		})
 
 		entries, err := os.ReadDir(dir)
@@ -248,9 +269,9 @@ func readConfig(dir string) (Config, error) {
 	return c, nil
 }
 
-// detectSPA returns true when the dir has index.html + a bundler output dir.
+// DetectSPA returns true when the dir has index.html + a bundler output dir.
 // Covers Vite (assets/), CRA (static/), Next.js (_next/), generic (dist/).
-func detectSPA(dir string) bool {
+func DetectSPA(dir string) bool {
 	bundleDirs := map[string]bool{"static": true, "assets": true, "_next": true, "dist": true}
 	hasIndex, hasBundleDir := false, false
 	entries, _ := os.ReadDir(dir)
@@ -264,4 +285,21 @@ func detectSPA(dir string) bool {
 		}
 	}
 	return hasIndex && hasBundleDir
+}
+
+// DetectNotFound returns the name of the site's custom 404 page, or "" when the
+// folder has none. The lookup is case-insensitive (a build tool may emit
+// 404.HTML) but the name is returned as it is spelled on disk, because that is
+// the path the file server will have to open.
+func DetectNotFound(dir string) string {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.EqualFold(e.Name(), NotFoundFileName) {
+			return e.Name()
+		}
+	}
+	return ""
 }
