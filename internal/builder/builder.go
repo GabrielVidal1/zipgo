@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -332,7 +333,7 @@ func siteHandler(s sites.Site, stripPrefix string) (obj, error) {
 	}
 	// Hide subdomain folders and the per-site config file from the file_server.
 	hide := append(dotHide(absPath), filepath.Join(absPath, sites.ConfigFileName))
-	return fileHandler(absPath, s.IsSPA, stripPrefix, hide, authorizedOrigins(s)), nil
+	return fileHandler(absPath, s.IsSPA, stripPrefix, hide, authorizedOrigins(s), s.Config.Headers), nil
 }
 
 // redirectHandler builds a subroute that answers every request for the site with
@@ -340,7 +341,7 @@ func siteHandler(s sites.Site, stripPrefix string) (obj, error) {
 // localhost mode the site's path prefix is stripped first, so the placeholder in
 // the Location header expands to the path *within* the site.
 func redirectHandler(s sites.Site, stripPrefix string) obj {
-	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s))}}}
+	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), s.Config.Headers)}}}
 	if stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
 			"handler":           "rewrite",
@@ -375,11 +376,12 @@ func redirectLocation(redirect string) string {
 }
 
 // proxyHandler builds a reverse_proxy subroute forwarding to the site's rewrite
-// upstream. It keeps the same security-headers handler as file routes, and (in
-// localhost mode) strips the path prefix before proxying.
+// upstream. It keeps the same security-headers handler as file routes (custom
+// .zipgoconfig.json headers included), and (in localhost mode) strips the path
+// prefix before proxying.
 func proxyHandler(s sites.Site, stripPrefix string) obj {
 	dial, useTLS := proxyDial(s.Config.Rewrite)
-	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s))}}}
+	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), s.Config.Headers)}}}
 	if stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
 			"handler":           "rewrite",
@@ -514,9 +516,10 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 // inserted so requests under /domain/name are served as if they were at root.
 // SPA sites fall back to index.html for unmatched paths. hide lists absolute
 // paths the file_server should hide from listing and serving (used to keep the
-// apex from exposing its dot-suffixed subdomain folders).
-func fileHandler(root string, isSPA bool, stripPrefix string, hide []string, frameAncestors string) obj {
-	routes := arr{obj{"handle": arr{securityHeaders(frameAncestors)}}}
+// apex from exposing its dot-suffixed subdomain folders). custom is the site's
+// .zipgoconfig.json "headers" map, merged into the security headers.
+func fileHandler(root string, isSPA bool, stripPrefix string, hide []string, frameAncestors string, custom map[string]string) obj {
+	routes := arr{obj{"handle": arr{securityHeaders(frameAncestors, custom)}}}
 
 	if stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
@@ -579,7 +582,16 @@ func toArr(s []string) arr {
 // a Content-Security-Policy frame-ancestors directive listing the allowed
 // embedding origins, and omits X-Frame-Options (the two conflict; CSP
 // frame-ancestors is the modern, allow-list-capable replacement).
-func securityHeaders(frameAncestors string) obj {
+//
+// custom holds the site's .zipgoconfig.json "headers" map. Its entries are
+// *merged into* this handler rather than replacing it: every default zipgo
+// sends is kept unless the site names that exact header, which is how a site
+// gets Cache-Control or CORS without a proxy in front. Names are canonicalised
+// ("cache-control" → "Cache-Control") so an override lands on the same key as
+// the default it replaces, and an empty value deletes the header (from the
+// defaults and from anything the file_server or upstream set) instead of
+// sending it blank.
+func securityHeaders(frameAncestors string, custom map[string]string) obj {
 	set := obj{
 		"X-Content-Type-Options": arr{"nosniff"},
 		"Referrer-Policy":        arr{"strict-origin-when-cross-origin"},
@@ -591,10 +603,46 @@ func securityHeaders(frameAncestors string) obj {
 	} else {
 		set["Content-Security-Policy"] = arr{"frame-ancestors 'self' " + frameAncestors}
 	}
+
+	var del []string
+	for name, value := range custom {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		key := headerKey(set, name)
+		if value == "" {
+			delete(set, key)
+			del = append(del, http.CanonicalHeaderKey(name))
+			continue
+		}
+		set[key] = arr{value}
+	}
+
+	response := obj{"set": set}
+	if len(del) > 0 {
+		sort.Strings(del) // stable config output across reloads
+		response["delete"] = toArr(del)
+	}
 	return obj{
 		"handler":  "headers",
-		"response": obj{"set": set},
+		"response": response,
 	}
+}
+
+// headerKey returns the key a custom header must be written under in set.
+// Header names are case-insensitive on the wire, so a site writing
+// "x-xss-protection" has to land on the *existing* default entry
+// ("X-XSS-Protection") — writing the canonical spelling would leave both in the
+// map and send the header twice. Only a header with no default gets the
+// canonical form ("cache-control" → "Cache-Control").
+func headerKey(set obj, name string) string {
+	for k := range set {
+		if strings.EqualFold(k, name) {
+			return k
+		}
+	}
+	return http.CanonicalHeaderKey(name)
 }
 
 // ---- helpers ---------------------------------------------------------------
