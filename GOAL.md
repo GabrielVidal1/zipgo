@@ -23,6 +23,7 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
+- [zipgo] Structured access logs (JSON to stdout) behind `ZIPGO_LOG_FORMAT=json` — @2026-07-14T23:16:14Z
 
 ## Target
 
