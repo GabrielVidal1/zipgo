@@ -163,6 +163,7 @@ zipgo serve     # start the server (default when no command is given)
 zipgo deploy    # rsync a local dir to a remote zipgo host over SSH
 zipgo ls        # list sites deployed on the remote target
 zipgo info      # show a deployed site's remote path, size and mtime
+zipgo doctor    # check the local domains folder for broken sites
 zipgo enable    # install and start the systemd user service
 zipgo disable   # stop and remove the systemd user service
 zipgo status    # show service status
@@ -235,6 +236,40 @@ zipgo ls                            # every deployed site, grouped by domain
 zipgo ls love-letters.game.gabvdl.xyz   # one site's remote folder contents
 zipgo info love-letters.game.gabvdl.xyz # remote path, size, file count, mtime
 ```
+
+### `zipgo doctor`
+
+Answers "why isn't my site serving?" without reading Caddy's logs. It checks the
+**local** domains folder (the one the server reads — `$ZIPGO_DOMAINS_FOLDER`, or
+a folder passed as an argument) and reports, per host:
+
+| Check | Level |
+|---|---|
+| No `index.html` (and no `rewrite`) — the host has nothing to serve | error |
+| …unless the folder only holds subdomains, which is a legitimate shape | warning |
+| `.zipgoconfig.json` is not valid JSON — **this blocks every reload** | error |
+| Unknown key in `.zipgoconfig.json` (`"enabled"` instead of `"enable"`) | warning |
+| Folder name isn't a valid domain / hostname | error |
+| Folder in the domains root with no dot — silently ignored by the server | warning |
+| Subdomain folder that forgot its trailing dot (`docs.example.com`) | warning |
+| A `rewrite` upstream zipgo cannot turn into a dial address | error |
+| Two folders claiming the same host (`a.b.` and `b./a.`) | error |
+
+```bash
+zipgo doctor                # check $ZIPGO_DOMAINS_FOLDER (default .zipgo)
+zipgo doctor /srv/domains   # check a specific folder
+zipgo doctor --strict       # exit 1 on warnings too, not just errors
+```
+
+It exits **1** when a site is broken, so it can gate a deploy:
+
+```bash
+zipgo doctor && zipgo deploy
+```
+
+A malformed `.zipgoconfig.json` is worth calling out: the server refuses to
+rebuild its config while one exists, so *every* site silently stays on the last
+good config. `doctor` is the fastest way to find which file it is.
 
 ---
 

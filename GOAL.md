@@ -23,7 +23,6 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
-- [zipgo] `zipgo doctor` — check the domains folder and report per-site problems, exit 1 when anything is wrong — @2026-07-14T14:05Z
 - [zipgo] `zipgo ls --json` — machine-readable site listing for scripts and dashboards — @2026-07-14T15:32Z
 
 ## Target
@@ -78,10 +77,13 @@ in a folder named `docs.`" is an obvious thing to say to a stranger.
 
 Ordered roughly by value. Each item is one session of work.
 
-- [ ] `zipgo doctor` — check the domains folder and report per-site problems
+- [x] `zipgo doctor` — check the domains folder and report per-site problems
       (missing `index.html`, malformed `.zipgoconfig.json`, folder name that
       isn't a valid domain, subdomain folder without a trailing dot that looks
       like it wanted one) with exit code 1 when anything is wrong.
+      Shipped in `internal/doctor` (+ table tests): also catches unknown
+      `.zipgoconfig.json` keys, unusable `rewrite` upstreams and two folders
+      claiming the same host. `--strict` fails on warnings too.
 - [ ] `zipgo ls --json` — machine-readable site listing (host, path, SPA/static,
       proxy target, size, mtime) so scripts and the homelab dashboards can
       consume it without scraping the human output.

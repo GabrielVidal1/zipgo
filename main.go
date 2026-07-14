@@ -26,6 +26,7 @@ import (
 	"zipgo/internal/builder"
 	"zipgo/internal/config"
 	"zipgo/internal/deploy"
+	"zipgo/internal/doctor"
 	"zipgo/internal/remote"
 	"zipgo/internal/service"
 	"zipgo/internal/sites"
@@ -73,6 +74,20 @@ read from .zipgo.json unless --ssh/--target is given).
   zipgo ls                 list every deployed site, grouped by domain
   zipgo ls <host>          list the contents of one site's remote folder
   zipgo info <host>        show a site's remote path, size, file count, mtime
+`
+
+const doctorUsage = `Usage: zipgo doctor [domains-folder] [--strict]
+
+Check the local domains folder and report, per site, everything that would stop
+it serving: a missing index.html, a malformed or misspelt .zipgoconfig.json, a
+folder that isn't a valid domain, a subdomain folder that forgot its trailing
+dot, an unusable "rewrite" upstream, two folders claiming the same host.
+
+  [domains-folder]  folder to check (default: $ZIPGO_DOMAINS_FOLDER, or .zipgo)
+      --strict      exit 1 on warnings too, not just errors
+
+Exits 1 when a site is broken, so it can gate a deploy:
+  zipgo doctor && zipgo deploy
 `
 
 func main() {
@@ -136,6 +151,24 @@ func main() {
 			}
 		}
 		return
+	case "doctor":
+		dir, strict, err := parseDoctorArgs(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, doctorUsage)
+			os.Exit(2)
+		}
+		if dir == "" {
+			dir = domainsFolder()
+		}
+		rep, err := doctor.Check(dir)
+		if err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		doctor.Print(os.Stdout, rep, dir)
+		if !rep.OK(strict) {
+			os.Exit(1)
+		}
+		return
 	case "help", "--help", "-h":
 		fmt.Println("Usage: zipgo [command]")
 		fmt.Println()
@@ -144,6 +177,7 @@ func main() {
 		fmt.Println("  deploy   rsync a local dir to a remote zipgo host over SSH")
 		fmt.Println("  ls       list sites deployed on the remote target")
 		fmt.Println("  info     show a deployed site's remote path, size and mtime")
+		fmt.Println("  doctor   check the local domains folder for broken sites")
 		fmt.Println("  enable   Install and start the systemd user service")
 		fmt.Println("  disable  Stop and remove the systemd user service")
 		fmt.Println("  status   Show service status")
@@ -151,6 +185,8 @@ func main() {
 		fmt.Print(deployUsage)
 		fmt.Println()
 		fmt.Print(manageUsage)
+		fmt.Println()
+		fmt.Print(doctorUsage)
 		return
 	case "serve", "":
 		// fall through to server startup
@@ -158,10 +194,7 @@ func main() {
 		log.Fatalf("❌  Unknown command %q. Run 'zipgo help' for usage.\n", sub)
 	}
 
-	domainsDir := os.Getenv("ZIPGO_DOMAINS_FOLDER")
-	if domainsDir == "" {
-		domainsDir = ".zipgo"
-	}
+	domainsDir := domainsFolder()
 
 	// ---- discover domains ----
 	domains, err := config.ReadDomains(domainsDir)
@@ -341,6 +374,34 @@ func mustCwd() string {
 		log.Fatalf("❌  %v\n", err)
 	}
 	return cwd
+}
+
+// domainsFolder is the folder scanned for domain subfolders, from
+// ZIPGO_DOMAINS_FOLDER with the .zipgo default.
+func domainsFolder() string {
+	if dir := os.Getenv("ZIPGO_DOMAINS_FOLDER"); dir != "" {
+		return dir
+	}
+	return ".zipgo"
+}
+
+// parseDoctorArgs parses the args for `doctor`: an optional positional domains
+// folder and an optional --strict.
+func parseDoctorArgs(args []string) (dir string, strict bool, err error) {
+	for _, a := range args {
+		switch {
+		case a == "--strict":
+			strict = true
+		case strings.HasPrefix(a, "-"):
+			return "", false, fmt.Errorf("unknown flag %q", a)
+		default:
+			if dir != "" {
+				return "", false, fmt.Errorf("unexpected argument %q", a)
+			}
+			dir = a
+		}
+	}
+	return dir, strict, nil
 }
 
 // parseManageArgs parses the args for `ls`/`info`: an optional positional host
