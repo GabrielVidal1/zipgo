@@ -23,6 +23,7 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
+- [zipgo] Serve a custom `404.html` when a non-SPA site has one, instead of Caddy's default plain-text 404. — @2026-07-14T19:15Z
 
 ## Target
 
