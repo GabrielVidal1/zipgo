@@ -234,7 +234,47 @@ Read-only inspection of what's deployed under the remote target (resolved from
 ```bash
 zipgo ls                            # every deployed site, grouped by domain
 zipgo ls love-letters.game.gabvdl.xyz   # one site's remote folder contents
-zipgo info love-letters.game.gabvdl.xyz # remote path, size, file count, mtime
+zipgo info love-letters.game.gabvdl.xyz # remote path, kind, size, files, mtime
+```
+
+#### `--json`
+
+Both commands take `--json` for scripts and dashboards, so nothing has to scrape
+the human output:
+
+```bash
+zipgo ls --json          # array of sites
+zipgo ls <host> --json   # array of files in that site's folder
+zipgo info <host> --json # that one site, as an object
+```
+
+Each site is reported the way the server routes it — `type` is `static`, `spa`
+(an `index.html` next to an `assets/`, `static/`, `_next/` or `dist/` folder) or
+`proxy` (a `.zipgoconfig.json` `rewrite`), `enabled` is `false` for a site turned
+off with `"enable": false`, and an unreadable `.zipgoconfig.json` shows up as
+`configError` instead of being silently ignored. `sizeBytes`/`files` count a
+site's **own** content: nested subdomain folders are sites of their own and are
+excluded, so an apex isn't reported as the sum of its whole domain.
+
+```console
+$ zipgo ls --json | jq -r '.[] | select(.enabled) | "\(.host)\t\(.type)"'
+gabvdl.xyz                      spa
+love-letters.game.gabvdl.xyz    static
+```
+
+```json
+{
+  "host": "docs.example.com",
+  "url": "https://docs.example.com",
+  "path": "/home/me/domains/example.com/docs.",
+  "type": "proxy",
+  "proxy": "localhost:8080",
+  "enabled": true,
+  "deployed": true,
+  "sizeBytes": 18,
+  "files": 1,
+  "modified": "2026-07-14T14:13:31Z"
+}
 ```
 
 ### `zipgo doctor`

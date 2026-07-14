@@ -65,15 +65,21 @@ Examples:
   #    served at https://love-letters.game.gabvdl.xyz
 `
 
-const manageUsage = `Usage: zipgo ls [host] [--ssh user@host:/base/path]
-       zipgo info <host> [--ssh user@host:/base/path]
+const manageUsage = `Usage: zipgo ls [host] [--json] [--ssh user@host:/base/path]
+       zipgo info <host> [--json] [--ssh user@host:/base/path]
 
 Inspect what is deployed under the remote zipgo domains folder (the target is
 read from .zipgo.json unless --ssh/--target is given).
 
   zipgo ls                 list every deployed site, grouped by domain
   zipgo ls <host>          list the contents of one site's remote folder
-  zipgo info <host>        show a site's remote path, size, file count, mtime
+  zipgo info <host>        show a site's remote path, kind, size, files, mtime
+  --json                   machine-readable output:
+                             ls          → array of sites (host, path, type,
+                                           proxy, enabled, sizeBytes, files,
+                                           modified)
+                             ls <host>   → array of files in the site's folder
+                             info <host> → that one site as an object
 `
 
 const doctorUsage = `Usage: zipgo doctor [domains-folder] [--strict]
@@ -128,7 +134,7 @@ func main() {
 		}
 		return
 	case "ls", "info":
-		host, ssh, err := parseManageArgs(os.Args[2:])
+		host, ssh, asJSON, err := parseManageArgs(os.Args[2:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, manageUsage)
 			os.Exit(2)
@@ -142,11 +148,11 @@ func main() {
 				fmt.Fprintf(os.Stderr, "❌  info requires a host\n\n%s", manageUsage)
 				os.Exit(2)
 			}
-			if err := remote.Info(target, host); err != nil {
+			if err := remote.Info(target, host, asJSON); err != nil {
 				log.Fatalf("❌  %v\n", err)
 			}
 		} else {
-			if err := remote.List(target, host); err != nil {
+			if err := remote.List(target, host, asJSON); err != nil {
 				log.Fatalf("❌  %v\n", err)
 			}
 		}
@@ -404,32 +410,34 @@ func parseDoctorArgs(args []string) (dir string, strict bool, err error) {
 	return dir, strict, nil
 }
 
-// parseManageArgs parses the args for `ls`/`info`: an optional positional host
-// and an optional --ssh/--target override.
-func parseManageArgs(args []string) (host, ssh string, err error) {
+// parseManageArgs parses the args for `ls`/`info`: an optional positional host,
+// an optional --ssh/--target override and an optional --json.
+func parseManageArgs(args []string) (host, ssh string, asJSON bool, err error) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--ssh" || a == "--target":
 			i++
 			if i >= len(args) {
-				return "", "", fmt.Errorf("%s requires a value", a)
+				return "", "", false, fmt.Errorf("%s requires a value", a)
 			}
 			ssh = args[i]
 		case strings.HasPrefix(a, "--ssh="):
 			ssh = a[len("--ssh="):]
 		case strings.HasPrefix(a, "--target="):
 			ssh = a[len("--target="):]
+		case a == "--json":
+			asJSON = true
 		case strings.HasPrefix(a, "-"):
-			return "", "", fmt.Errorf("unknown flag %q", a)
+			return "", "", false, fmt.Errorf("unknown flag %q", a)
 		default:
 			if host != "" {
-				return "", "", fmt.Errorf("unexpected argument %q", a)
+				return "", "", false, fmt.Errorf("unexpected argument %q", a)
 			}
 			host = a
 		}
 	}
-	return host, ssh, nil
+	return host, ssh, asJSON, nil
 }
 
 // watchAndReload watches domainsDir for filesystem changes and calls reload()

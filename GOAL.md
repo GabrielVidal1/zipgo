@@ -23,8 +23,6 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
-- [zipgo] `zipgo ls --json` — machine-readable site listing for scripts and dashboards — @2026-07-14T15:32Z
-
 ## Target
 
 Who this is for, in priority order:
@@ -84,9 +82,14 @@ Ordered roughly by value. Each item is one session of work.
       Shipped in `internal/doctor` (+ table tests): also catches unknown
       `.zipgoconfig.json` keys, unusable `rewrite` upstreams and two folders
       claiming the same host. `--strict` fails on warnings too.
-- [ ] `zipgo ls --json` — machine-readable site listing (host, path, SPA/static,
+- [x] `zipgo ls --json` — machine-readable site listing (host, path, SPA/static,
       proxy target, size, mtime) so scripts and the homelab dashboards can
       consume it without scraping the human output.
+      Also on `info <host> --json` (one site as an object) and `ls <host> --json`
+      (the folder's entries). Each record reports `type` (static/spa/proxy) and
+      `enabled` the way the server actually routes the site, surfaces an
+      unreadable `.zipgoconfig.json` as `configError`, and counts a site's own
+      content only (nested subdomain folders excluded).
 - [ ] Redirect support in `.zipgoconfig.json` (`"redirect": "https://elsewhere"`,
       optional `"redirectStatus": 301|302`) — the one thing people currently have
       to fake with an `index.html` meta refresh.
