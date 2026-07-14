@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **zipgo** — a minimal static site host written in Go. It embeds Caddy as a library, discovers domains and subdomains from a local domains folder (default `.zipgo/`), and serves them over HTTPS (domain mode) or HTTP on a single localhost port (localhost mode).
 
+Where this is going is defined in [GOAL.md](GOAL.md) — read it before proposing features.
+
 ## Commands
 
 ```bash
