@@ -18,6 +18,8 @@ import (
 	"strings"
 
 	"zipgo/internal/sites"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Level ranks a finding. Error means the site is broken (it will not serve, or
@@ -103,12 +105,13 @@ var knownConfigKeys = map[string]bool{
 	"redirect":       true,
 	"redirectStatus": true,
 	"allowHttp":      true,
+	"basicAuth":      true,
 	"headers":        true,
 }
 
 // knownKeyList is the human list of keys printed as a hint next to an unknown
 // key, in a stable order.
-const knownKeyList = "enable, rewrite, redirect, redirectStatus, allowHttp, headers"
+const knownKeyList = "enable, rewrite, redirect, redirectStatus, allowHttp, basicAuth, headers"
 
 // redirectStatuses are the status codes "redirectStatus" accepts: 301/308
 // permanent, 302/307 temporary.
@@ -326,6 +329,7 @@ func (r *Report) checkConfig(dir, host string) (sites.Config, bool) {
 	}
 
 	r.checkRedirect(dir, path, host, cfg)
+	r.checkBasicAuth(cfg, path, host)
 
 	return cfg, cfg.Enabled()
 }
@@ -376,6 +380,64 @@ func (r *Report) checkRedirect(dir, path, host string, cfg sites.Config) {
 			Hint: "delete the leftover files, or drop \"redirect\" to serve them again",
 		})
 	}
+}
+
+// checkBasicAuth validates the basicAuth block. The dangerous mistake is a
+// plaintext password: Caddy compares it as a bcrypt hash, so the site locks
+// *everyone* out (including the author) while the secret sits in a file that
+// gets rsynced to the server — worth an Error, not a Warn.
+func (r *Report) checkBasicAuth(cfg sites.Config, path, host string) {
+	if cfg.BasicAuth == nil {
+		return
+	}
+	if len(cfg.BasicAuth) == 0 {
+		r.add(Finding{
+			Level: Warn, Host: host, Path: path,
+			Msg:  "\"basicAuth\" is empty — the site is served without a password",
+			Hint: "add \"user\": \"<bcrypt hash>\", or drop the key",
+		})
+		return
+	}
+
+	users := make([]string, 0, len(cfg.BasicAuth))
+	for u := range cfg.BasicAuth {
+		users = append(users, u)
+	}
+	sort.Strings(users)
+
+	for _, u := range users {
+		if strings.TrimSpace(u) == "" {
+			r.add(Finding{
+				Level: Error, Host: host, Path: path,
+				Msg:  "\"basicAuth\" has an empty username",
+				Hint: "keys are usernames: {\"alice\": \"<bcrypt hash>\"}",
+			})
+			continue
+		}
+		if bad := invalidBcrypt(cfg.BasicAuth[u]); bad != "" {
+			r.add(Finding{
+				Level: Error, Host: host, Path: path,
+				Msg:  fmt.Sprintf("basicAuth password for %q is not usable: %s", u, bad),
+				Hint: "hash it: `caddy hash-password` or `htpasswd -nbB " + u + " <password>` (the $2a$… string)",
+			})
+		}
+	}
+}
+
+// invalidBcrypt reports why s is not a bcrypt hash Caddy can compare against,
+// or "" when it is one. Passwords are never compared in plaintext, so anything
+// that isn't a hash is a site nobody can log into.
+func invalidBcrypt(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "it is empty"
+	}
+	if !strings.HasPrefix(s, "$2") {
+		return "it looks like a plaintext password, not a bcrypt hash"
+	}
+	if _, err := bcrypt.Cost([]byte(s)); err != nil {
+		return fmt.Sprintf("not a valid bcrypt hash (%v)", err)
+	}
+	return ""
 }
 
 // computedHeaders are response headers the server (file_server or reverse_proxy)

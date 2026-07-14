@@ -2,6 +2,7 @@ package remote
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -144,5 +145,39 @@ func TestUnixToRFC3339(t *testing.T) {
 		if got := unixToRFC3339(in); got != "" {
 			t.Errorf("unixToRFC3339(%q) = %q, want empty", in, got)
 		}
+	}
+}
+
+// A basicAuth site is reported as protected — a served site that needs
+// credentials — without ever exposing the hashes themselves.
+func TestParseSitesProtected(t *testing.T) {
+	const hash = "$2y$05$lxJfaQMx3WaZsB7K5ZvLz.5Sw1mdcAx2fwJycu2oQJfxqLSySlTK."
+	want := []hostDir{
+		{host: "example.com", dir: "/base/example.com"},
+		{host: "staging.example.com", dir: "/base/example.com/staging."},
+	}
+	out := strings.Join([]string{
+		record("/base/example.com", "1", "10", "1", "1752500000", "1", "0", ""),
+		record("/base/example.com/staging.", "1", "10", "1", "1752500001", "1", "0",
+			`{"basicAuth":{"claude":"`+hash+`"}}`),
+	}, "\n")
+
+	got := parseSites(want, out)
+	if apex := got[0]; apex.Protected {
+		t.Errorf("apex.Protected = true, want false (no basicAuth)")
+	}
+	staging := got[1]
+	if !staging.Protected {
+		t.Errorf("staging.Protected = false, want true (basicAuth)")
+	}
+	if !staging.Enabled {
+		t.Errorf("staging.Enabled = false — a protected site is still served")
+	}
+	blob, err := json.Marshal(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), hash) {
+		t.Errorf("JSON record leaks the password hash: %s", blob)
 	}
 }

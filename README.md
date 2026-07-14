@@ -22,6 +22,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **Recursive subdomains** — a folder ending in a dot (`docs.`) becomes a subdomain; nest them for sub-subdomains
 - **Multiple domains** — host several domains at once, each in its own folder
 - **SPA support** — auto-detected; all unknown paths fall back to `index.html`
+- **Password-protected sites** — `"basicAuth"` in a site's `.zipgoconfig.json` puts a staging subdomain behind HTTP basic auth
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
 - **Systemd integration** — `zipgo enable` sets up a user service that starts on boot
 
@@ -132,7 +133,10 @@ hides it). All keys are optional:
                                    //        instead of redirecting to HTTPS
   "headers": {                     // extra response headers, merged into the
     "Cache-Control": "public, max-age=31536000, immutable"
-  }                                //   security headers zipgo already sends
+  },                               //   security headers zipgo already sends
+  "basicAuth": {                   // put the whole site behind a password
+    "alice": "$2a$14$Zkx19XLiW…"   //   username → *bcrypt hash*, never a
+  }                                //   plaintext password
 }
 ```
 
@@ -188,12 +192,28 @@ hides it). All keys are optional:
 
   Headers apply to every kind of site: on a `rewrite` proxy they override
   whatever the upstream sent, and on a `redirect` they ride along with the 301/302.
+- **`basicAuth`** puts the site behind HTTP basic auth — one file turns a
+  staging subdomain into a password-protected one. Keys are usernames, values
+  are **bcrypt hashes** (`caddy hash-password`, or `htpasswd -nbB alice s3cret`
+  and keep the `$2y$…` part). Plaintext passwords are never accepted: Caddy
+  compares against a hash, so a plaintext value locks *everyone* out — `doctor`
+  reports it as an error.
+
+  The check runs before anything is served, so it protects static files, SPA
+  routes, a `rewrite` upstream and the site's own `/sub-domains-meta` listing
+  alike. Child subdomains are **separate sites** and are not covered — give each
+  one its own `basicAuth` (they can share the same hash).
 
 ```bash
 # retire old.example.com, keeping every deep link working
 mkdir -p .zipgo/example.com/old.
 echo '{"redirect": "https://new.example.com", "redirectStatus": 301}' \
     > .zipgo/example.com/old./.zipgoconfig.json
+
+# password-protect staging.example.com
+mkdir -p .zipgo/example.com/staging.
+echo "{\"basicAuth\": {\"alice\": \"$(htpasswd -nbB alice s3cret | cut -d: -f2)\"}}" \
+    > .zipgo/example.com/staging./.zipgoconfig.json
 ```
 
 Edits are picked up by the file watcher and hot-reloaded like any other change.
@@ -310,7 +330,9 @@ Each site is reported the way the server routes it — `type` is `static`, `spa`
 (an `index.html` next to an `assets/`, `static/`, `_next/` or `dist/` folder),
 `proxy` (a `.zipgoconfig.json` `rewrite`) or `redirect` (a `.zipgoconfig.json`
 `redirect`, reported with its `redirect` target and `redirectStatus`), `enabled`
-is `false` for a site turned off with `"enable": false`, and an unreadable
+is `false` for a site turned off with `"enable": false`, `protected` is `true`
+for a site behind `basicAuth` (the hashes themselves are never exposed), and an
+unreadable
 `.zipgoconfig.json` shows up as `configError` instead of being silently ignored. `sizeBytes`/`files` count a
 site's **own** content: nested subdomain folders are sites of their own and are
 excluded, so an apex isn't reported as the sum of its whole domain.
@@ -329,6 +351,7 @@ love-letters.game.gabvdl.xyz    static
   "type": "proxy",
   "proxy": "localhost:8080",
   "enabled": true,
+  "protected": false,
   "deployed": true,
   "sizeBytes": 18,
   "files": 1,
@@ -357,6 +380,9 @@ a folder passed as an argument) and reports, per host:
 | A `redirect` target that isn't an absolute `http(s)` URL (a path would loop) | error |
 | A `redirectStatus` that isn't 301/302/307/308 | error |
 | `redirect` and `rewrite` both set — the proxy upstream is never used | error |
+| A `basicAuth` password that isn't a bcrypt hash (a plaintext locks everyone out) | error |
+| A `basicAuth` entry with an empty username | error |
+| An empty `basicAuth` block — the site is served with no password at all | warning |
 | `redirect` on a folder that still has an `index.html` (never served) | warning |
 | `redirectStatus` without a `redirect` target | warning |
 | Two folders claiming the same host (`a.b.` and `b./a.`) | error |
