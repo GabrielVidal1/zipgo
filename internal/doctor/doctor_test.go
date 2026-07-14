@@ -494,3 +494,86 @@ func TestInvalidBcrypt(t *testing.T) {
 		})
 	}
 }
+
+// A 404.html only does something on a static site. Everywhere else it is a file
+// the author expects to be served that never will be, so doctor says so.
+func TestCheckNotFoundPage(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   map[string]string
+		wantMsg string // "" = the page is served, so no finding about it
+	}{
+		{
+			name: "static site with a 404.html is fine",
+			files: map[string]string{
+				"example.com/index.html": "<html></html>",
+				"example.com/404.html":   "<html>gone</html>",
+			},
+		},
+		{
+			name: "spa never serves it",
+			files: map[string]string{
+				"example.com/index.html":    "<html></html>",
+				"example.com/assets/app.js": "console.log(1)",
+				"example.com/404.html":      "<html>gone</html>",
+			},
+			wantMsg: "404.html is never served",
+		},
+		{
+			name: "proxy site never serves it",
+			files: map[string]string{
+				"example.com/index.html":        "<html></html>",
+				"example.com/.zipgoconfig.json": `{"rewrite": "localhost:8080"}`,
+				"example.com/404.html":          "<html>gone</html>",
+			},
+			wantMsg: "404.html is never served",
+		},
+		{
+			name: "redirect site never serves it",
+			files: map[string]string{
+				"example.com/.zipgoconfig.json": `{"redirect": "https://elsewhere.example"}`,
+				"example.com/404.html":          "<html>gone</html>",
+			},
+			wantMsg: "404.html is never served",
+		},
+		{
+			name: "no 404.html, nothing to say",
+			files: map[string]string{
+				"example.com/index.html":    "<html></html>",
+				"example.com/assets/app.js": "console.log(1)",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rep, err := Check(tree(t, tc.files))
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			f, found := find(rep, "404.html is never served")
+			if tc.wantMsg == "" {
+				if found {
+					t.Fatalf("want no 404 finding, got %q", f.Msg)
+				}
+				return
+			}
+			if !found {
+				t.Fatalf("want a finding about the unused 404 page, got %+v", rep.Findings)
+			}
+			// It serves — it just ignores the file — so this is a warning, not an
+			// error, and must not fail a plain `zipgo doctor`.
+			if f.Level != Warn {
+				t.Errorf("level = %v, want Warn", f.Level)
+			}
+			if !rep.OK(false) {
+				t.Error("an unused 404 page should not fail doctor without --strict")
+			}
+			if rep.OK(true) {
+				t.Error("--strict should fail on the warning")
+			}
+			if f.Hint == "" {
+				t.Error("a warning about a dead file should say what to do about it")
+			}
+		})
+	}
+}

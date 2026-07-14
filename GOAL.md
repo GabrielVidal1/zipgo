@@ -23,7 +23,6 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
-- [zipgo] Serve a custom `404.html` when a non-SPA site has one, instead of Caddy's default plain-text 404. — @2026-07-14T19:15Z
 
 ## Target
 
@@ -117,8 +116,14 @@ Ordered roughly by value. Each item is one session of work.
       compares against a hash, so it would lock everyone out *and* commit a
       secret), on a bogus hash and on an empty username. `ls`/`info --json`
       report `protected`, never the hashes.
-- [ ] Serve a custom `404.html` when a non-SPA site has one, instead of Caddy's
+- [x] Serve a custom `404.html` when a non-SPA site has one, instead of Caddy's
       default plain-text 404.
+      The file's presence *is* the config. The status stays 404 (a `status_code`
+      on the error route's file_server), so it isn't a soft-404; the page sits
+      inside the basic-auth wrapper, is resolved per site (no inheriting the
+      parent's), and only a 404 is dressed up — a 403/500 is still Caddy's. An
+      SPA (200 index.html fallback) and `rewrite`/`redirect` sites can't serve
+      one, so `doctor` warns when a `404.html` is dead weight in one of those.
 - [ ] Structured access logs (JSON to stdout, one line per request with host,
       path, status, duration) behind a `ZIPGO_LOG_FORMAT=json` env var, so the
       homelab's Loki can ingest them.

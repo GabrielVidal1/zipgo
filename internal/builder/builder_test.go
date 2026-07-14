@@ -382,7 +382,7 @@ func TestSecurityHeadersCustom(t *testing.T) {
 func TestCustomHeadersOnBothHandlers(t *testing.T) {
 	cfg := sites.Config{Headers: map[string]string{"Cache-Control": "no-store"}}
 
-	fileSub := fileHandler(t.TempDir(), false, "", nil, "", cfg.Headers)
+	fileSub := fileHandler(t.TempDir(), false, "", nil, "", cfg.Headers, "")
 	fileHdr := fileSub["routes"].(arr)[0].(obj)["handle"].(arr)[0].(obj)
 	if got := fileHdr["response"].(obj)["set"].(obj)["Cache-Control"]; !reflect.DeepEqual(got, arr{"no-store"}) {
 		t.Errorf("file route: Cache-Control not applied, got %v", got)
@@ -393,5 +393,141 @@ func TestCustomHeadersOnBothHandlers(t *testing.T) {
 	proxyHdr := proxySub["routes"].(arr)[0].(obj)["handle"].(arr)[0].(obj)
 	if got := proxyHdr["response"].(obj)["set"].(obj)["Cache-Control"]; !reflect.DeepEqual(got, arr{"no-store"}) {
 		t.Errorf("proxy route: Cache-Control not applied, got %v", got)
+	}
+}
+
+// notFoundRoutes digs the error-handling routes out of a site's subroute, or
+// returns nil when the site has none.
+func notFoundRoutes(h obj) arr {
+	errs, ok := h["errors"].(obj)
+	if !ok {
+		return nil
+	}
+	routes, _ := errs["routes"].(arr)
+	return routes
+}
+
+// A static site with a 404.html serves it as the body of its 404s — with the
+// status still 404, and only for 404s.
+func TestNotFoundPageServed(t *testing.T) {
+	root := t.TempDir()
+	h, err := siteHandler(sites.Site{Path: root, NotFoundPage: "404.html"}, "")
+	if err != nil {
+		t.Fatalf("siteHandler: %v", err)
+	}
+	routes := notFoundRoutes(h)
+	if len(routes) != 1 {
+		t.Fatalf("want 1 error route, got %d (%v)", len(routes), h["errors"])
+	}
+	route := routes[0].(obj)
+
+	// Only a 404 is rewritten to the page: a 403 or a 500 must not be dressed up
+	// as a missing page.
+	match := route["match"].(arr)[0].(obj)
+	if got := match["expression"]; got != "{http.error.status_code} == 404" {
+		t.Errorf("error matcher = %v, want a 404-only expression", got)
+	}
+
+	handle := route["handle"].(arr)
+	rewrite := handle[0].(obj)
+	if rewrite["handler"] != "rewrite" || rewrite["uri"] != "/404.html" {
+		t.Errorf("want a rewrite to /404.html, got %v", rewrite)
+	}
+	fs := handle[1].(obj)
+	if fs["handler"] != "file_server" {
+		t.Errorf("want the page served by file_server, got %v", fs["handler"])
+	}
+	if fs["root"] != root {
+		t.Errorf("file_server root = %v, want the site root %q", fs["root"], root)
+	}
+	// The whole point: a custom body, not a 200. A soft-404 would tell crawlers
+	// (and `curl -f`) the page exists.
+	if fs["status_code"] != "404" {
+		t.Errorf("status_code = %v, want \"404\" — the body changes, the status does not", fs["status_code"])
+	}
+}
+
+// The page is served under the name it actually has on disk.
+func TestNotFoundPageUsesNameOnDisk(t *testing.T) {
+	h, err := siteHandler(sites.Site{Path: t.TempDir(), NotFoundPage: "404.HTML"}, "")
+	if err != nil {
+		t.Fatalf("siteHandler: %v", err)
+	}
+	rewrite := notFoundRoutes(h)[0].(obj)["handle"].(arr)[0].(obj)
+	if rewrite["uri"] != "/404.HTML" {
+		t.Errorf("rewrite uri = %v, want the file as spelled on disk", rewrite["uri"])
+	}
+}
+
+// Sites that cannot 404 from disk get no error route: an SPA falls back to
+// index.html, and proxy/redirect sites never reach the file server.
+func TestNoNotFoundRouteWhenPageCannotBeServed(t *testing.T) {
+	cases := []struct {
+		name string
+		site sites.Site
+	}{
+		{"no 404.html at all", sites.Site{}},
+		{"spa", sites.Site{NotFoundPage: "404.html", IsSPA: true}},
+		{"proxy", sites.Site{
+			NotFoundPage: "404.html",
+			Config:       sites.Config{Rewrite: "localhost:8080"},
+		}},
+		{"redirect", sites.Site{
+			NotFoundPage: "404.html",
+			Config:       sites.Config{Redirect: "https://elsewhere.com"},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.site.Path = t.TempDir()
+			h, err := siteHandler(tc.site, "")
+			if err != nil {
+				t.Fatalf("siteHandler: %v", err)
+			}
+			if routes := notFoundRoutes(h); routes != nil {
+				t.Errorf("want no error routes, got %v", routes)
+			}
+		})
+	}
+}
+
+// In localhost mode the site is served under a path prefix, but the 404 page is
+// still resolved against the site's own root — the rewrite is not prefixed.
+func TestNotFoundPageLocalhostMode(t *testing.T) {
+	root := t.TempDir()
+	h, err := siteHandler(sites.Site{Path: root, NotFoundPage: "404.html"}, "/example.com")
+	if err != nil {
+		t.Fatalf("siteHandler: %v", err)
+	}
+	handle := notFoundRoutes(h)[0].(obj)["handle"].(arr)
+	if uri := handle[0].(obj)["uri"]; uri != "/404.html" {
+		t.Errorf("rewrite uri = %v, want /404.html (root-relative, not prefixed)", uri)
+	}
+	if got := handle[1].(obj)["root"]; got != root {
+		t.Errorf("file_server root = %v, want %q", got, root)
+	}
+}
+
+// A protected site's 404 page lives behind the auth check, like everything else
+// it serves — the error route must not leak the page (or its existence) to an
+// unauthenticated caller.
+func TestNotFoundPageUnderBasicAuth(t *testing.T) {
+	site := sites.Site{Path: t.TempDir(), NotFoundPage: "404.html", Config: protectedConfig()}
+	h, err := siteHandler(site, "")
+	if err != nil {
+		t.Fatalf("siteHandler: %v", err)
+	}
+	// The outer subroute is the auth wrapper: auth first, then the file subroute
+	// which carries the error routes.
+	outer := h["routes"].(arr)
+	if first := outer[0].(obj)["handle"].(arr)[0].(obj); first["handler"] != "authentication" {
+		t.Fatalf("want the auth check first, got %v", first["handler"])
+	}
+	if notFoundRoutes(h) != nil {
+		t.Error("the error routes must sit inside the guarded subroute, not outside it")
+	}
+	inner := outer[1].(obj)["handle"].(arr)[0].(obj)
+	if notFoundRoutes(inner) == nil {
+		t.Error("the guarded file subroute should still serve the custom 404 page")
 	}
 }

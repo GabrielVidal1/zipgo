@@ -203,6 +203,7 @@ func (r *Report) walk(dir, domain string, labels []string, hosts map[string][]st
 	} else {
 		r.Sites++
 		r.checkContent(dir, host, cfg)
+		r.checkNotFoundPage(dir, host, cfg)
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -521,6 +522,40 @@ func (r *Report) checkContent(dir, host string, cfg sites.Config) {
 	r.add(Finding{
 		Level: level, Host: host, Path: dir,
 		Msg:  "no index.html — the host has nothing to serve",
+		Hint: hint,
+	})
+}
+
+// checkNotFoundPage reports a custom 404 page that will never be served. The
+// file only takes effect on a static site, where a request matching no file is a
+// real 404. An SPA answers unknown paths with index.html and a 200; a proxy or
+// redirect site never reaches the file server at all. In both cases the page sits
+// in the folder looking like it works, which is exactly the kind of silent
+// nothing doctor exists to name.
+func (r *Report) checkNotFoundPage(dir, host string, cfg sites.Config) {
+	name := sites.DetectNotFound(dir)
+	if name == "" {
+		return
+	}
+	var why, hint string
+	switch {
+	case cfg.Redirect != "":
+		why = "the site redirects every request to " + cfg.Redirect
+		hint = "remove the file, or drop \"redirect\" from " + sites.ConfigFileName +
+			" to serve the folder"
+	case cfg.Rewrite != "":
+		why = "the site proxies every request to " + cfg.Rewrite
+		hint = "the upstream answers its own 404s; remove the file, or drop \"rewrite\" from " +
+			sites.ConfigFileName
+	case sites.DetectSPA(dir):
+		why = "the site is an SPA, so an unknown path falls back to index.html with a 200"
+		hint = "an SPA renders its own not-found route client-side; remove the file if it is dead weight"
+	default:
+		return // static site — the page is served, as intended.
+	}
+	r.add(Finding{
+		Level: Warn, Host: host, Path: filepath.Join(dir, name),
+		Msg:  fmt.Sprintf("%s is never served — %s", name, why),
 		Hint: hint,
 	})
 }

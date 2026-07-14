@@ -22,6 +22,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **Recursive subdomains** — a folder ending in a dot (`docs.`) becomes a subdomain; nest them for sub-subdomains
 - **Multiple domains** — host several domains at once, each in its own folder
 - **SPA support** — auto-detected; all unknown paths fall back to `index.html`
+- **Custom 404 page** — drop a `404.html` in a static site's folder and it becomes the body of its 404s
 - **Password-protected sites** — `"basicAuth"` in a site's `.zipgoconfig.json` puts a staging subdomain behind HTTP basic auth
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
 - **Systemd integration** — `zipgo enable` sets up a user service that starts on boot
@@ -106,11 +107,22 @@ The domain folder root is the apex site; each subdomain folder is its own site.
 ```
 yourdomain.com/
 ├── index.html         # entry point
+├── 404.html           # optional — the body of this site's 404s
 ├── assets/            # presence of this (or static/, _next/, dist/) marks the site as an SPA
 └── ...
 ```
 
 **SPA detection** — a site is treated as a single-page app when it contains `index.html` **and** one of the bundler output directories: `assets/`, `static/`, `_next/`, `dist/`. All unmatched paths are rewritten to `/index.html`.
+
+**Custom 404 page** — a static site with a `404.html` in its folder serves that
+file, instead of Caddy's plain-text 404, for any request that matches no file.
+Nothing to configure: the file being there *is* the config. The status stays
+**404** — only the body changes, so crawlers and `curl -f` still see a miss
+rather than a soft 404. It applies per site (a subdomain does not inherit its
+parent's page) and only to a static one: an SPA answers unknown paths with
+`index.html` and a 200, and `rewrite`/`redirect` sites never reach the file
+server — `zipgo doctor` warns when a `404.html` sits in one of those folders,
+where it would never be served.
 
 ### Per-site config (`.zipgoconfig.json`)
 
@@ -384,6 +396,7 @@ a folder passed as an argument) and reports, per host:
 | A `basicAuth` entry with an empty username | error |
 | An empty `basicAuth` block — the site is served with no password at all | warning |
 | `redirect` on a folder that still has an `index.html` (never served) | warning |
+| A `404.html` in an SPA, `rewrite` or `redirect` site — it is never served | warning |
 | `redirectStatus` without a `redirect` target | warning |
 | Two folders claiming the same host (`a.b.` and `b./a.`) | error |
 

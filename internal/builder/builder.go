@@ -352,7 +352,11 @@ func unguardedSiteHandler(s sites.Site, stripPrefix string) (obj, error) {
 	}
 	// Hide subdomain folders and the per-site config file from the file_server.
 	hide := append(dotHide(absPath), filepath.Join(absPath, sites.ConfigFileName))
-	return fileHandler(absPath, s.IsSPA, stripPrefix, hide, authorizedOrigins(s), s.Config.Headers), nil
+	notFound := ""
+	if s.HasNotFoundPage() {
+		notFound = s.NotFoundPage
+	}
+	return fileHandler(absPath, s.IsSPA, stripPrefix, hide, authorizedOrigins(s), s.Config.Headers, notFound), nil
 }
 
 // redirectHandler builds a subroute that answers every request for the site with
@@ -578,8 +582,10 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 // SPA sites fall back to index.html for unmatched paths. hide lists absolute
 // paths the file_server should hide from listing and serving (used to keep the
 // apex from exposing its dot-suffixed subdomain folders). custom is the site's
-// .zipgoconfig.json "headers" map, merged into the security headers.
-func fileHandler(root string, isSPA bool, stripPrefix string, hide []string, frameAncestors string, custom map[string]string) obj {
+// .zipgoconfig.json "headers" map, merged into the security headers. notFound is
+// the site's custom 404 page (a file name, "" when it has none), served in place
+// of Caddy's plain-text 404 body.
+func fileHandler(root string, isSPA bool, stripPrefix string, hide []string, frameAncestors string, custom map[string]string, notFound string) obj {
 	routes := arr{obj{"handle": arr{securityHeaders(frameAncestors, custom)}}}
 
 	if stripPrefix != "" {
@@ -625,7 +631,37 @@ func fileHandler(root string, isSPA bool, stripPrefix string, hide []string, fra
 		routes = append(routes, obj{"handle": arr{fs}})
 	}
 
-	return obj{"handler": "subroute", "routes": routes}
+	sub := obj{"handler": "subroute", "routes": routes}
+	if !isSPA && notFound != "" {
+		sub["errors"] = notFoundErrors(root, hide, notFound)
+	}
+	return sub
+}
+
+// notFoundErrors builds the error-handling routes of a static site's subroute:
+// when the file_server raises a 404, serve the site's own 404 page as the body
+// instead of Caddy's plain-text default. The status stays 404 (status_code on
+// the file_server), so crawlers and `curl -f` still see a miss — this replaces
+// the body, not the semantics. Any other error (a 403 on an unreadable file, a
+// 500) is left to Caddy: a site's 404 page is not an excuse to swallow those.
+// The security-headers handler has already run on the way in, so the custom page
+// goes out with the same headers as every other response from the site.
+func notFoundErrors(root string, hide []string, notFound string) obj {
+	fs := obj{
+		"handler":     "file_server",
+		"root":        root,
+		"status_code": "404",
+	}
+	if len(hide) > 0 {
+		fs["hide"] = toArr(hide)
+	}
+	return obj{"routes": arr{obj{
+		"match": arr{obj{"expression": "{http.error.status_code} == 404"}},
+		"handle": arr{
+			obj{"handler": "rewrite", "uri": "/" + notFound},
+			fs,
+		},
+	}}}
 }
 
 func toArr(s []string) arr {
