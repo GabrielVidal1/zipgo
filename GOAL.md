@@ -24,6 +24,7 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
      yours in the same commit that ticks its checkbox. -->
 
 - [zipgo] `zipgo doctor` — check the domains folder and report per-site problems, exit 1 when anything is wrong — @2026-07-14T14:05Z
+- [zipgo] `zipgo ls --json` — machine-readable site listing for scripts and dashboards — @2026-07-14T15:32Z
 
 ## Target
 
