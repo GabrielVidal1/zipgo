@@ -23,6 +23,8 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
+- [zipgo] Redirect support in .zipgoconfig.json (redirect + redirectStatus) — @2026-07-14T18:50Z
+
 ## Target
 
 Who this is for, in priority order:
