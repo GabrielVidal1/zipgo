@@ -439,6 +439,7 @@ good config. `doctor` is the fastest way to find which file it is.
 | `ZIPGO_LOCALHOST`       | _(off)_   | Set to `1` to force localhost mode (single port)   |
 | `ZIPGO_METRICS`         | _(off)_   | Set to any value to expose Prometheus metrics      |
 | `ZIPGO_METRICS_ADDR`    | `127.0.0.1:2019` | Address for the metrics endpoint (loopback by default) |
+| `ZIPGO_LOG_FORMAT`      | _(off)_   | Set to `json` for one JSON access-log line per request on stdout |
 
 If the domains folder contains no valid domain folders, zipgo automatically falls back to localhost mode.
 
@@ -459,6 +460,23 @@ scrape_configs:
 
 Useful series: `caddy_http_requests_total`, `caddy_http_request_duration_seconds`,
 `caddy_http_response_size_bytes` (labeled by handler and status).
+
+### Access logs
+
+Set `ZIPGO_LOG_FORMAT=json` to emit one structured JSON access-log line per
+request on **stdout** — host, path, method, status, duration, response size and
+headers — ready to be scraped by a log shipper (e.g. Loki via the container's
+stdout). Each line is tagged `"logger":"http.log.access.access"`, so a pipeline
+can pick access logs out from zipgo's own error output:
+
+```jsonc
+{"level":"info","logger":"http.log.access.access","msg":"handled request",
+ "request":{"host":"blog.example.com","method":"GET","uri":"/posts/hi"},
+ "duration":0.0026,"size":1421,"status":200}
+```
+
+Off by default (no per-request logging, only Caddy errors). The loopback metrics
+server is excluded, so Prometheus scrapes don't flood the request stream.
 
 ---
 

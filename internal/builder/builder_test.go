@@ -56,12 +56,60 @@ func TestWithMetrics(t *testing.T) {
 }
 
 func TestBuildConfigWithMetrics(t *testing.T) {
-	cfg, err := BuildConfig(nil, "127.0.0.1:2019")
+	cfg, err := BuildConfig(nil, "127.0.0.1:2019", "")
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
 	if cfg.AppsRaw["http"] == nil {
 		t.Fatal("missing http app")
+	}
+}
+
+func TestLogFormat(t *testing.T) {
+	t.Setenv("ZIPGO_LOG_FORMAT", "")
+	if got := LogFormat(); got != "" {
+		t.Fatalf("unset: want \"\", got %q", got)
+	}
+	t.Setenv("ZIPGO_LOG_FORMAT", "  JSON  ")
+	if got := LogFormat(); got != "json" {
+		t.Fatalf("json: want %q, got %q", "json", got)
+	}
+}
+
+func TestAccessLogging(t *testing.T) {
+	// Off: only the errors-only default logger, servers untouched.
+	servers := obj{"https": obj{"listen": arr{":443"}}}
+	logging := accessLogging(servers, "")
+	logs := logging["logs"].(obj)
+	if _, ok := logs["access"]; ok {
+		t.Fatal("off: should not add an access logger")
+	}
+	if _, ok := servers["https"].(obj)["logs"]; ok {
+		t.Fatal("off: should not enable per-server access logs")
+	}
+
+	// On: JSON-to-stdout access logger, per-server logs on content servers,
+	// the metrics server excluded.
+	servers = obj{
+		"https":   obj{"listen": arr{":443"}},
+		"metrics": obj{"listen": arr{"127.0.0.1:2019"}},
+	}
+	logging = accessLogging(servers, "json")
+	access, ok := logging["logs"].(obj)["access"].(obj)
+	if !ok {
+		t.Fatal("on: missing access logger")
+	}
+	if got := access["encoder"].(obj)["format"]; got != "json" {
+		t.Fatalf("encoder format: want json, got %v", got)
+	}
+	if got := access["writer"].(obj)["output"]; got != "stdout" {
+		t.Fatalf("writer output: want stdout, got %v", got)
+	}
+	if got := servers["https"].(obj)["logs"].(obj)["default_logger_name"]; got != "access" {
+		t.Fatalf("content server logger: want access, got %v", got)
+	}
+	if _, ok := servers["metrics"].(obj)["logs"]; ok {
+		t.Fatal("on: metrics server should not get access logs")
 	}
 }
 

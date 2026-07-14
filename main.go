@@ -21,6 +21,7 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/rewrite"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls/standardstek"
+	_ "github.com/caddyserver/caddy/v2/modules/logging" // ZIPGO_LOG_FORMAT=json: caddy.logging.encoders.json
 	_ "github.com/caddyserver/caddy/v2/modules/metrics"
 	"github.com/fsnotify/fsnotify"
 
@@ -219,6 +220,10 @@ func main() {
 	// /metrics endpoint is served on this (loopback by default) address.
 	metricsAddr := builder.MetricsAddr()
 
+	// logFormat is "" unless ZIPGO_LOG_FORMAT=json is set, in which case each
+	// server emits one JSON access-log line per request to stdout (for Loki).
+	logFormat := builder.LogFormat()
+
 	// ---- discoverAll: build []DomainSites for all configured domains ----
 	discoverAll := func() ([]builder.DomainSites, error) {
 		var result []builder.DomainSites
@@ -240,9 +245,9 @@ func main() {
 		}
 		var cfg *caddy.Config
 		if isLocalhost {
-			cfg, err = builder.BuildLocalhostConfig(domainSites, metricsAddr)
+			cfg, err = builder.BuildLocalhostConfig(domainSites, metricsAddr, logFormat)
 		} else {
-			cfg, err = builder.BuildConfig(domainSites, metricsAddr)
+			cfg, err = builder.BuildConfig(domainSites, metricsAddr, logFormat)
 		}
 		if err != nil {
 			return err
@@ -275,7 +280,7 @@ func main() {
 			}
 		}
 		fmt.Println()
-		cfg, err = builder.BuildLocalhostConfig(domainSites, metricsAddr)
+		cfg, err = builder.BuildLocalhostConfig(domainSites, metricsAddr, logFormat)
 	} else {
 		for _, ds := range domainSites {
 			fmt.Printf("🌐  Domain : %s (%d sites)\n", ds.Domain, len(ds.Sites))
@@ -292,7 +297,7 @@ func main() {
 			}
 		}
 		fmt.Println()
-		cfg, err = builder.BuildConfig(domainSites, metricsAddr)
+		cfg, err = builder.BuildConfig(domainSites, metricsAddr, logFormat)
 	}
 	if err != nil {
 		log.Fatalf("❌  Could not build config: %v\n", err)

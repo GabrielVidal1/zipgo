@@ -61,6 +61,40 @@ func MetricsAddr() string {
 	return DefaultMetricsAddr
 }
 
+// LogFormat returns the access-log format selected via ZIPGO_LOG_FORMAT,
+// lower-cased and trimmed. The only structured format is "json"; anything else
+// (including unset) means no access logs — Caddy still logs errors at ERROR
+// level, but nothing per request.
+func LogFormat() string {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("ZIPGO_LOG_FORMAT")))
+}
+
+// accessLogging returns the top-level Caddy logging config and, when format is
+// "json", turns on structured access logging: every content HTTP server routes
+// its per-request logs to a dedicated "access" logger that this config encodes
+// as one JSON line per request on stdout, ready for a log shipper (e.g. Loki)
+// to ingest. The metrics server is left out so loopback Prometheus scrapes
+// don't drown the request stream. With any other format the servers are left
+// untouched and only the default (errors-only) logger is configured.
+func accessLogging(servers obj, format string) obj {
+	logging := obj{"logs": obj{"default": obj{"level": "ERROR"}}}
+	if format != "json" {
+		return logging
+	}
+	for name, s := range servers {
+		if name == "metrics" {
+			continue
+		}
+		s.(obj)["logs"] = obj{"default_logger_name": "access"}
+	}
+	logging["logs"].(obj)["access"] = obj{
+		"encoder": obj{"format": "json"},
+		"writer":  obj{"output": "stdout"},
+		"include": arr{"http.log.access.access"},
+	}
+	return logging
+}
+
 // withMetrics enables per-server HTTP request metrics on each server in the
 // given servers map and, when addr is non-empty, adds a dedicated server that
 // serves the Prometheus /metrics endpoint on addr. It is a no-op when addr is
@@ -210,8 +244,9 @@ func metaRoute(matcher obj, m map[string]meta.Meta) (obj, error) {
 // BuildConfig serves every site on its host over HTTPS (Let's Encrypt).
 // It supports multiple domains simultaneously. When metricsAddr is non-empty,
 // per-server HTTP metrics are enabled and a Prometheus /metrics endpoint is
-// served on that address.
-func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, error) {
+// served on that address. When logFormat is "json", structured JSON access logs
+// are written to stdout (one line per request).
+func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*caddy.Config, error) {
 	routes := arr{}
 	// httpRoutes are the per-site routes served on :80 for sites that opt into
 	// plain HTTP via allowHttp. Everything else falls through to the catch-all
@@ -284,7 +319,7 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 	withMetrics(servers, metricsAddr)
 
 	cfg := obj{
-		"logging": obj{"logs": obj{"default": obj{"level": "ERROR"}}},
+		"logging": accessLogging(servers, logFormat),
 		"admin":   obj{"disabled": true},
 		"apps": obj{
 			"http": obj{"servers": servers},
@@ -492,8 +527,9 @@ func proxyDial(rewrite string) (dial string, useTLS bool) {
 // routing: localhost:9000/<domain>/<subdomain>. The apex maps to
 // localhost:9000/<domain> (no extra segment). When metricsAddr is non-empty,
 // per-server HTTP metrics are enabled and a Prometheus /metrics endpoint is
-// served on that address.
-func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, error) {
+// served on that address. When logFormat is "json", structured JSON access logs
+// are written to stdout (one line per request).
+func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*caddy.Config, error) {
 	routes := arr{}
 
 	for _, ds := range domainSites {
@@ -563,7 +599,7 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 	withMetrics(servers, metricsAddr)
 
 	cfg := obj{
-		"logging": obj{"logs": obj{"default": obj{"level": "ERROR"}}},
+		"logging": accessLogging(servers, logFormat),
 		"admin":   obj{"disabled": true},
 		"apps": obj{
 			"http": obj{"servers": servers},
