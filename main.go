@@ -87,7 +87,8 @@ const doctorUsage = `Usage: zipgo doctor [domains-folder] [--strict]
 Check the local domains folder and report, per site, everything that would stop
 it serving: a missing index.html, a malformed or misspelt .zipgoconfig.json, a
 folder that isn't a valid domain, a subdomain folder that forgot its trailing
-dot, an unusable "rewrite" upstream, two folders claiming the same host.
+dot, an unusable "rewrite" upstream or "redirect" target, two folders claiming
+the same host.
 
   [domains-folder]  folder to check (default: $ZIPGO_DOMAINS_FOLDER, or .zipgo)
       --strict      exit 1 on warnings too, not just errors
@@ -268,13 +269,7 @@ func main() {
 				if !s.Config.Enabled() {
 					continue
 				}
-				kind := "static"
-				if s.IsSPA {
-					kind = "spa   "
-				}
-				if s.Config.Rewrite != "" {
-					kind = "proxy "
-				}
+				kind := siteKind(s)
 				fmt.Printf("   [%s]  http://localhost:%d%s\n", kind, builder.LocalhostStartPort, s.LocalhostPath(ds.Domain))
 			}
 		}
@@ -287,13 +282,7 @@ func main() {
 				if !s.Config.Enabled() {
 					continue
 				}
-				kind := "static"
-				if s.IsSPA {
-					kind = "spa   "
-				}
-				if s.Config.Rewrite != "" {
-					kind = "proxy "
-				}
+				kind := siteKind(s)
 				scheme := "https"
 				if s.Config.HTTPAllowed() {
 					scheme = "http(s)"
@@ -332,6 +321,22 @@ func main() {
 
 	fmt.Println("\n🛑  Shutting down...")
 	caddy.Stop()
+}
+
+// siteKind is the padded label printed next to a site in the startup listing,
+// mirroring how the builder routes it: a redirect target wins over a rewrite
+// upstream, which wins over the file server (SPA or plain static).
+func siteKind(s sites.Site) string {
+	switch {
+	case s.Config.Redirect != "":
+		return "redir "
+	case s.Config.Rewrite != "":
+		return "proxy "
+	case s.IsSPA:
+		return "spa   "
+	default:
+		return "static"
+	}
 }
 
 // loadConfigs discovers the project (package.json "zipgo") and root

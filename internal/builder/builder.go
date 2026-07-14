@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"zipgo/internal/meta"
@@ -106,10 +107,12 @@ func hasIndex(s sites.Site) bool {
 
 // served reports whether a site should produce a route at all. A site is served
 // when its .zipgoconfig.json doesn't disable it (enable:false) and it has
-// something to serve — either an index.html (file mode) or a rewrite upstream
-// (reverse-proxy mode). Disabled sites are also excluded from sub-domains-meta.
+// something to serve — an index.html (file mode), a rewrite upstream
+// (reverse-proxy mode) or a redirect target. Disabled sites are also excluded
+// from sub-domains-meta.
 func served(s sites.Site) bool {
-	return s.Config.Enabled() && (s.Config.Rewrite != "" || hasIndex(s))
+	return s.Config.Enabled() &&
+		(s.Config.Redirect != "" || s.Config.Rewrite != "" || hasIndex(s))
 }
 
 // authorizedOrigins reads the site's index.html and returns the value of its
@@ -311,10 +314,15 @@ func domainRoute(s sites.Site, rootDomain string) (obj, error) {
 	}, nil
 }
 
-// siteHandler builds the handler for a single site: a reverse_proxy subroute
-// when the site declares a rewrite upstream, otherwise the file_server subroute.
+// siteHandler builds the handler for a single site: a redirect subroute when the
+// site declares a redirect target, a reverse_proxy subroute when it declares a
+// rewrite upstream, otherwise the file_server subroute. A site that (wrongly)
+// sets both redirect and rewrite redirects — doctor flags the combination.
 // stripPrefix is the localhost path prefix to strip ("" in domain mode).
 func siteHandler(s sites.Site, stripPrefix string) (obj, error) {
+	if s.Config.Redirect != "" {
+		return redirectHandler(s, stripPrefix), nil
+	}
 	if s.Config.Rewrite != "" {
 		return proxyHandler(s, stripPrefix), nil
 	}
@@ -325,6 +333,45 @@ func siteHandler(s sites.Site, stripPrefix string) (obj, error) {
 	// Hide subdomain folders and the per-site config file from the file_server.
 	hide := append(dotHide(absPath), filepath.Join(absPath, sites.ConfigFileName))
 	return fileHandler(absPath, s.IsSPA, stripPrefix, hide, authorizedOrigins(s)), nil
+}
+
+// redirectHandler builds a subroute that answers every request for the site with
+// a redirect to the site's configured target, instead of serving files. In
+// localhost mode the site's path prefix is stripped first, so the placeholder in
+// the Location header expands to the path *within* the site.
+func redirectHandler(s sites.Site, stripPrefix string) obj {
+	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s))}}}
+	if stripPrefix != "" {
+		routes = append(routes, obj{"handle": arr{obj{
+			"handler":           "rewrite",
+			"strip_path_prefix": stripPrefix,
+		}}})
+	}
+	routes = append(routes, obj{"handle": arr{obj{
+		"handler":     "static_response",
+		"status_code": strconv.Itoa(s.Config.RedirectCode()),
+		"headers":     obj{"Location": arr{redirectLocation(s.Config.Redirect)}},
+	}}})
+	return obj{"handler": "subroute", "routes": routes}
+}
+
+// redirectLocation turns a "redirect" value into the Location header Caddy
+// sends. A bare origin ("https://elsewhere.com", trailing slash allowed) keeps
+// the request's path and query, so deep links survive a domain move:
+// /docs?x=1 → https://elsewhere.com/docs?x=1. A target that carries a path or a
+// query ("https://elsewhere.com/moved") is used verbatim — every request lands
+// there.
+func redirectLocation(redirect string) string {
+	r := strings.TrimSpace(redirect)
+	u, err := url.Parse(r)
+	if err != nil || u.Host == "" {
+		// doctor rejects these; be conservative and don't append anything.
+		return r
+	}
+	if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
+		return r
+	}
+	return strings.TrimSuffix(r, "/") + "{http.request.uri}"
 }
 
 // proxyHandler builds a reverse_proxy subroute forwarding to the site's rewrite

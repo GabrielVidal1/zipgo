@@ -23,7 +23,6 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
-- [zipgo] Redirect support in .zipgoconfig.json (redirect + redirectStatus) — @2026-07-14T18:50Z
 - [zipgo] Custom headers in .zipgoconfig.json (headers map merged into the security-headers handler) — @2026-07-14T18:51Z
 - [zipgo] Basic-auth in .zipgoconfig.json (basicAuth map of user → bcrypt hash) — @2026-07-14T18:53Z
 
@@ -94,9 +93,14 @@ Ordered roughly by value. Each item is one session of work.
       `enabled` the way the server actually routes the site, surfaces an
       unreadable `.zipgoconfig.json` as `configError`, and counts a site's own
       content only (nested subdomain folders excluded).
-- [ ] Redirect support in `.zipgoconfig.json` (`"redirect": "https://elsewhere"`,
+- [x] Redirect support in `.zipgoconfig.json` (`"redirect": "https://elsewhere"`,
       optional `"redirectStatus": 301|302`) — the one thing people currently have
       to fake with an `index.html` meta refresh.
+      A bare origin keeps the request's path and query (deep links survive a
+      domain move); a target with a path is used verbatim. Status defaults to
+      302 (301/307/308 accepted), `ls`/`info --json` report `type: "redirect"`,
+      and `doctor` rejects a non-absolute target, a bogus status, and
+      `redirect` + `rewrite` together.
 - [ ] Custom headers in `.zipgoconfig.json` (`"headers": {"Cache-Control": "..."}`)
       merged into the security-headers handler, so a site can set caching or CORS
       without a proxy in front.

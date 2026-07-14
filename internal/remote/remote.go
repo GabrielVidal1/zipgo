@@ -26,11 +26,16 @@ type Site struct {
 	Host string `json:"host"`
 	URL  string `json:"url"`
 	Path string `json:"path"`
-	// Type is "static", "spa" (index.html + a bundle folder) or "proxy"
-	// (.zipgoconfig.json rewrite), mirroring how the server routes the site.
+	// Type is "static", "spa" (index.html + a bundle folder), "proxy"
+	// (.zipgoconfig.json rewrite) or "redirect" (.zipgoconfig.json redirect),
+	// mirroring how the server routes the site.
 	Type string `json:"type"`
 	// Proxy is the rewrite upstream; set only when Type is "proxy".
 	Proxy string `json:"proxy,omitempty"`
+	// Redirect is the redirect target and RedirectStatus the status code it is
+	// sent with; both set only when Type is "redirect".
+	Redirect       string `json:"redirect,omitempty"`
+	RedirectStatus int    `json:"redirectStatus,omitempty"`
 	// Enabled is false when .zipgoconfig.json sets "enable": false — the site is
 	// deployed but deliberately not served.
 	Enabled  bool   `json:"enabled"`
@@ -53,9 +58,10 @@ type Entry struct {
 
 // site type names, mirroring how internal/builder routes a site.
 const (
-	typeStatic = "static"
-	typeSPA    = "spa"
-	typeProxy  = "proxy"
+	typeStatic   = "static"
+	typeSPA      = "spa"
+	typeProxy    = "proxy"
+	typeRedirect = "redirect"
 )
 
 // bundleDirs are the folders that, next to an index.html, mark a site as an SPA.
@@ -165,6 +171,13 @@ func parseSites(want []hostDir, out string) []Site {
 			if cfg.Rewrite != "" {
 				s.Type = typeProxy
 				s.Proxy = cfg.Rewrite
+			}
+			// A redirect replaces the file server *and* any rewrite, the way
+			// the builder routes it — so it decides the type last.
+			if cfg.Redirect != "" {
+				s.Type = typeRedirect
+				s.Redirect = cfg.Redirect
+				s.RedirectStatus = cfg.RedirectCode()
 			}
 		}
 		byDir[f[0]] = s
@@ -326,6 +339,9 @@ func Info(target deploy.Target, host string, asJSON bool) error {
 	kind := s.Type
 	if s.Type == typeProxy {
 		kind = fmt.Sprintf("%s → %s", typeProxy, s.Proxy)
+	}
+	if s.Type == typeRedirect {
+		kind = fmt.Sprintf("%s → %s (%d)", typeRedirect, s.Redirect, s.RedirectStatus)
 	}
 	if !s.Enabled {
 		kind += " (disabled: enable=false)"

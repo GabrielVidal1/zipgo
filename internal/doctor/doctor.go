@@ -10,6 +10,7 @@ package doctor
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -96,10 +97,20 @@ func (r Report) OK(strict bool) bool {
 // silently ignored by the real parser, which makes a typo ("enabled" instead of
 // "enable") look like zipgo is broken — so doctor calls it out.
 var knownConfigKeys = map[string]bool{
-	"enable":    true,
-	"rewrite":   true,
-	"allowHttp": true,
+	"enable":         true,
+	"rewrite":        true,
+	"redirect":       true,
+	"redirectStatus": true,
+	"allowHttp":      true,
 }
+
+// knownKeyList is the human list of keys printed as a hint next to an unknown
+// key, in a stable order.
+const knownKeyList = "enable, rewrite, redirect, redirectStatus, allowHttp"
+
+// redirectStatuses are the status codes "redirectStatus" accepts: 301/308
+// permanent, 302/307 temporary.
+var redirectStatuses = map[int]bool{301: true, 302: true, 307: true, 308: true}
 
 // Check walks domainsDir and returns everything wrong with it. The returned
 // error is only non-nil when the folder itself cannot be read — per-site
@@ -278,7 +289,7 @@ func (r *Report) checkConfig(dir, host string) (sites.Config, bool) {
 			if guess := nearestKey(k); guess != "" {
 				f.Hint = fmt.Sprintf("did you mean %q?", guess)
 			} else {
-				f.Hint = "known keys: enable, rewrite, allowHttp"
+				f.Hint = "known keys: " + knownKeyList
 			}
 			r.add(f)
 		}
@@ -294,13 +305,64 @@ func (r *Report) checkConfig(dir, host string) (sites.Config, bool) {
 		}
 	}
 
+	r.checkRedirect(dir, path, host, cfg)
+
 	return cfg, cfg.Enabled()
+}
+
+// checkRedirect validates the "redirect"/"redirectStatus" pair: the target must
+// be an absolute http(s) URL, the status must be a real redirect code, and the
+// key must not be combined with settings it silently overrides.
+func (r *Report) checkRedirect(dir, path, host string, cfg sites.Config) {
+	if cfg.Redirect == "" {
+		if cfg.RedirectStatus != 0 {
+			r.add(Finding{
+				Level: Warn, Host: host, Path: path,
+				Msg:  fmt.Sprintf("\"redirectStatus\": %d has no effect without a \"redirect\" target", cfg.RedirectStatus),
+				Hint: "add \"redirect\": \"https://elsewhere.example\", or drop the key",
+			})
+		}
+		return
+	}
+
+	if bad := invalidRedirect(cfg.Redirect); bad != "" {
+		r.add(Finding{
+			Level: Error, Host: host, Path: path,
+			Msg:  fmt.Sprintf("redirect target %q is not usable: %s", cfg.Redirect, bad),
+			Hint: "use an absolute URL, e.g. \"https://elsewhere.example\" (the path and query are kept) or \"https://elsewhere.example/moved\"",
+		})
+	}
+
+	if cfg.RedirectStatus != 0 && !redirectStatuses[cfg.RedirectStatus] {
+		r.add(Finding{
+			Level: Error, Host: host, Path: path,
+			Msg:  fmt.Sprintf("redirectStatus %d is not a redirect status code", cfg.RedirectStatus),
+			Hint: fmt.Sprintf("use 301 or 308 (permanent), 302 or 307 (temporary); the default is %d", sites.DefaultRedirectStatus),
+		})
+	}
+
+	if cfg.Rewrite != "" {
+		r.add(Finding{
+			Level: Error, Host: host, Path: path,
+			Msg:  "\"redirect\" and \"rewrite\" are both set — the site redirects and the proxy upstream is never used",
+			Hint: "keep one: \"redirect\" to send visitors elsewhere, \"rewrite\" to proxy the site",
+		})
+	}
+
+	if hasIndex(dir) {
+		r.add(Finding{
+			Level: Warn, Host: host, Path: path,
+			Msg:  "the folder has an index.html but the site redirects — its content is never served",
+			Hint: "delete the leftover files, or drop \"redirect\" to serve them again",
+		})
+	}
 }
 
 // checkContent verifies an enabled site has something to serve.
 func (r *Report) checkContent(dir, host string, cfg sites.Config) {
-	if cfg.Rewrite != "" {
-		// A proxied site serves nothing from disk, so index.html is irrelevant.
+	if cfg.Rewrite != "" || cfg.Redirect != "" {
+		// A proxied or redirected site serves nothing from disk, so index.html
+		// is irrelevant.
 		return
 	}
 	if hasIndex(dir) {
@@ -310,7 +372,7 @@ func (r *Report) checkContent(dir, host string, cfg sites.Config) {
 	// intentional shape (e.g. gabvdl.xyz/game./ holding game subdomains), so it
 	// is a warning rather than an error — but it still means the host itself has
 	// nothing to serve.
-	level, hint := Error, "add an index.html, or set \"rewrite\" in "+sites.ConfigFileName+" to proxy the site"
+	level, hint := Error, "add an index.html, or set \"rewrite\" (proxy) or \"redirect\" in "+sites.ConfigFileName
 	if hasSubdomainChild(dir) {
 		level = Warn
 		hint = "this folder only holds subdomains; set \"enable\": false in " +
@@ -458,6 +520,39 @@ func invalidUpstream(u string) string {
 	}
 	if strings.HasPrefix(u, "/") {
 		return "looks like a path, not an upstream address"
+	}
+	return ""
+}
+
+// invalidRedirect sanity-checks a "redirect" value the way the builder will read
+// it: an absolute http(s) URL with a host. A path ("/elsewhere") is rejected on
+// purpose — a redirect replaces the site's file server, so a same-site path
+// would redirect to itself forever.
+func invalidRedirect(u string) string {
+	if u == "" {
+		return "empty"
+	}
+	if strings.TrimSpace(u) != u {
+		return "leading or trailing whitespace"
+	}
+	if strings.ContainsAny(u, " \t") {
+		return "contains a space"
+	}
+	if strings.HasPrefix(u, "/") {
+		return "a path redirects the site to itself (an infinite loop) — use an absolute URL"
+	}
+	if !strings.Contains(u, "://") {
+		return "no scheme — use \"https://…\""
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return fmt.Sprintf("not a URL: %v", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Sprintf("unsupported scheme %q (use http or https)", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return "no host after the scheme"
 	}
 	return ""
 }

@@ -41,6 +41,42 @@ func TestReadConfig(t *testing.T) {
 	}
 }
 
+func TestRedirectConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	// No redirect → empty target, and the default status is still reported.
+	c, err := readConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Redirect != "" {
+		t.Errorf("redirect: want empty, got %q", c.Redirect)
+	}
+
+	// redirect without redirectStatus → DefaultRedirectStatus (302).
+	write(t, dir, `{"redirect": "https://elsewhere.example"}`)
+	c, err = readConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Redirect != "https://elsewhere.example" {
+		t.Errorf("redirect: got %q", c.Redirect)
+	}
+	if got := c.RedirectCode(); got != DefaultRedirectStatus {
+		t.Errorf("RedirectCode: want %d, got %d", DefaultRedirectStatus, got)
+	}
+
+	// An explicit redirectStatus wins.
+	write(t, dir, `{"redirect": "https://elsewhere.example", "redirectStatus": 301}`)
+	c, err = readConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.RedirectCode(); got != 301 {
+		t.Errorf("RedirectCode: want 301, got %d", got)
+	}
+}
+
 func TestDiscoverReadsConfig(t *testing.T) {
 	dir := t.TempDir()
 	domain := filepath.Join(dir, "example.com")
