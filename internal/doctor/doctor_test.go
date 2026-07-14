@@ -165,6 +165,99 @@ func TestCheck(t *testing.T) {
 			wantHost:  "api.example.com",
 		},
 		{
+			name: "a redirecting site needs no index.html",
+			files: map[string]string{
+				"example.com/index.html":             "<html></html>",
+				"example.com/old./.zipgoconfig.json": `{"redirect": "https://elsewhere.example"}`,
+			},
+		},
+		{
+			name: "a redirect with an explicit status is clean",
+			files: map[string]string{
+				"example.com/index.html":             "<html></html>",
+				"example.com/old./.zipgoconfig.json": `{"redirect": "https://elsewhere.example/moved", "redirectStatus": 301}`,
+			},
+		},
+		{
+			name: "a redirect target without a scheme is an error",
+			files: map[string]string{
+				"example.com/index.html":             "<html></html>",
+				"example.com/old./.zipgoconfig.json": `{"redirect": "elsewhere.example"}`,
+			},
+			wantMsg:   "redirect target",
+			wantLevel: Error,
+			wantHost:  "old.example.com",
+		},
+		{
+			name: "a redirect to a path would loop and is an error",
+			files: map[string]string{
+				"example.com/index.html":             "<html></html>",
+				"example.com/old./.zipgoconfig.json": `{"redirect": "/new"}`,
+			},
+			wantMsg:   "infinite loop",
+			wantLevel: Error,
+			wantHost:  "old.example.com",
+		},
+		{
+			name: "an unsupported redirect scheme is an error",
+			files: map[string]string{
+				"example.com/index.html":             "<html></html>",
+				"example.com/old./.zipgoconfig.json": `{"redirect": "ftp://elsewhere.example"}`,
+			},
+			wantMsg:   "unsupported scheme",
+			wantLevel: Error,
+			wantHost:  "old.example.com",
+		},
+		{
+			name: "a non-redirect status code is an error",
+			files: map[string]string{
+				"example.com/index.html":             "<html></html>",
+				"example.com/old./.zipgoconfig.json": `{"redirect": "https://elsewhere.example", "redirectStatus": 200}`,
+			},
+			wantMsg:   "redirectStatus 200 is not a redirect status code",
+			wantLevel: Error,
+			wantHost:  "old.example.com",
+		},
+		{
+			name: "redirect combined with rewrite is an error",
+			files: map[string]string{
+				"example.com/index.html": "<html></html>",
+				"example.com/old./.zipgoconfig.json": `{"redirect": "https://elsewhere.example",` +
+					`"rewrite": "localhost:8080"}`,
+			},
+			wantMsg:   `"redirect" and "rewrite" are both set`,
+			wantLevel: Error,
+			wantHost:  "old.example.com",
+		},
+		{
+			name: "redirect over a folder that still has content warns",
+			files: map[string]string{
+				"example.com/index.html":             "<html></html>",
+				"example.com/old./index.html":        "<html>old site</html>",
+				"example.com/old./.zipgoconfig.json": `{"redirect": "https://elsewhere.example"}`,
+			},
+			wantMsg:   "its content is never served",
+			wantLevel: Warn,
+			wantHost:  "old.example.com",
+		},
+		{
+			name: "redirectStatus without a redirect warns",
+			files: map[string]string{
+				"example.com/index.html":        "<html></html>",
+				"example.com/.zipgoconfig.json": `{"redirectStatus": 301}`,
+			},
+			wantMsg:   "has no effect without a \"redirect\" target",
+			wantLevel: Warn,
+			wantHost:  "example.com",
+		},
+		{
+			name: "redirect and redirectStatus are known keys",
+			files: map[string]string{
+				"example.com/index.html":             "<html></html>",
+				"example.com/old./.zipgoconfig.json": `{"redirect": "https://elsewhere.example", "redirectStatus": 308}`,
+			},
+		},
+		{
 			name: "two folders claiming the same host is an error",
 			files: map[string]string{
 				"example.com/index.html":       "<html></html>",

@@ -26,13 +26,38 @@ type Config struct {
 	// address: a bare host:port (e.g. "localhost:8080") or a URL with scheme
 	// (e.g. "https://api.example.com").
 	Rewrite string `json:"rewrite,omitempty"`
+	// Redirect, when non-empty, redirects every request for the site to another
+	// absolute URL instead of serving files from its folder. When the value is a
+	// bare origin ("https://elsewhere.com") the request's path and query are
+	// preserved (/docs → https://elsewhere.com/docs); when it carries a path
+	// ("https://elsewhere.com/moved") every request lands on that exact URL.
+	Redirect string `json:"redirect,omitempty"`
+	// RedirectStatus is the status code used for Redirect (301, 302, 307 or
+	// 308). Unset means DefaultRedirectStatus (302) — a temporary redirect, so a
+	// mistake isn't cached in browsers forever.
+	RedirectStatus int `json:"redirectStatus,omitempty"`
 	// AllowHTTP, when true, also serves the site over plain HTTP (port 80)
 	// instead of redirecting to HTTPS. Has no effect in localhost mode.
 	AllowHTTP *bool `json:"allowHttp,omitempty"`
 }
 
+// DefaultRedirectStatus is the status code used for a "redirect" site that does
+// not set "redirectStatus". 302 (temporary) is the safe default: browsers cache
+// a 301 aggressively, and in a folder-tree config a redirect is as easy to undo
+// as deleting a file — the routing shouldn't outlive the file.
+const DefaultRedirectStatus = 302
+
 // Enabled reports whether the site should be served (default true).
 func (c Config) Enabled() bool { return c.Enable == nil || *c.Enable }
+
+// RedirectCode returns the status code to use for the site's redirect,
+// defaulting to DefaultRedirectStatus when unset.
+func (c Config) RedirectCode() int {
+	if c.RedirectStatus == 0 {
+		return DefaultRedirectStatus
+	}
+	return c.RedirectStatus
+}
 
 // HTTPAllowed reports whether the site opts into being served over plain HTTP
 // (default false).

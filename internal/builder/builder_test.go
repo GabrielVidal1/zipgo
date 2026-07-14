@@ -108,6 +108,91 @@ func TestServed(t *testing.T) {
 	}
 }
 
+func TestServedRedirect(t *testing.T) {
+	fls := false
+	dir := t.TempDir() // no index.html inside
+
+	// Redirect target → served even without an index.html.
+	if !served(sites.Site{Path: dir, Config: sites.Config{Redirect: "https://elsewhere.example"}}) {
+		t.Error("redirect site should be served")
+	}
+	// Explicitly disabled → not served, even with a redirect.
+	if served(sites.Site{Path: dir, Config: sites.Config{Enable: &fls, Redirect: "https://elsewhere.example"}}) {
+		t.Error("disabled redirect site should not be served")
+	}
+}
+
+func TestRedirectLocation(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// A bare origin keeps the request's path and query.
+		{"https://elsewhere.example", "https://elsewhere.example{http.request.uri}"},
+		{"https://elsewhere.example/", "https://elsewhere.example{http.request.uri}"},
+		{"http://elsewhere.example:8080", "http://elsewhere.example:8080{http.request.uri}"},
+		{"  https://elsewhere.example  ", "https://elsewhere.example{http.request.uri}"},
+		// A target with a path/query/fragment is used verbatim.
+		{"https://elsewhere.example/moved", "https://elsewhere.example/moved"},
+		{"https://elsewhere.example/?ref=old", "https://elsewhere.example/?ref=old"},
+		{"https://elsewhere.example/#here", "https://elsewhere.example/#here"},
+	}
+	for _, c := range cases {
+		if got := redirectLocation(c.in); got != c.want {
+			t.Errorf("redirectLocation(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRedirectHandler(t *testing.T) {
+	// Default status: 302, path-preserving Location.
+	h := redirectHandler(sites.Site{Config: sites.Config{Redirect: "https://elsewhere.example"}}, "")
+	routes := h["routes"].(arr)
+	sr := routes[len(routes)-1].(obj)["handle"].(arr)[0].(obj)
+	if sr["handler"] != "static_response" {
+		t.Fatalf("want static_response, got %v", sr["handler"])
+	}
+	if sr["status_code"] != "302" {
+		t.Errorf("status_code: want 302 (the default), got %v", sr["status_code"])
+	}
+	loc := sr["headers"].(obj)["Location"]
+	if !reflect.DeepEqual(loc, arr{"https://elsewhere.example{http.request.uri}"}) {
+		t.Errorf("Location: got %v", loc)
+	}
+
+	// Explicit status, and (localhost mode) the site prefix is stripped before
+	// the Location placeholder expands.
+	h = redirectHandler(
+		sites.Site{Config: sites.Config{Redirect: "https://elsewhere.example", RedirectStatus: 301}},
+		"/example.com/old",
+	)
+	routes = h["routes"].(arr)
+	rw := routes[1].(obj)["handle"].(arr)[0].(obj)
+	if rw["handler"] != "rewrite" || rw["strip_path_prefix"] != "/example.com/old" {
+		t.Errorf("localhost mode should strip the site prefix first, got %v", rw)
+	}
+	sr = routes[len(routes)-1].(obj)["handle"].(arr)[0].(obj)
+	if sr["status_code"] != "301" {
+		t.Errorf("status_code: want 301, got %v", sr["status_code"])
+	}
+}
+
+// A redirect replaces the file server, and wins over a rewrite upstream.
+func TestSiteHandlerRedirectWins(t *testing.T) {
+	h, err := siteHandler(sites.Site{
+		Path:   t.TempDir(),
+		Config: sites.Config{Redirect: "https://elsewhere.example", Rewrite: "localhost:8080"},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := h["routes"].(arr)
+	last := routes[len(routes)-1].(obj)["handle"].(arr)[0].(obj)
+	if last["handler"] != "static_response" {
+		t.Fatalf("redirect should win over rewrite, got handler %v", last["handler"])
+	}
+}
+
 func TestProxyHandlerTLS(t *testing.T) {
 	h := proxyHandler(sites.Site{Config: sites.Config{Rewrite: "https://api.example.com"}}, "")
 	last := h["routes"].(arr)[len(h["routes"].(arr))-1].(obj)

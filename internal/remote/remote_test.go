@@ -83,6 +83,32 @@ func TestParseSites(t *testing.T) {
 	}
 }
 
+// A redirecting site is reported as type "redirect", with its target and the
+// status it is sent with (the default when the config omits redirectStatus).
+func TestParseSitesRedirect(t *testing.T) {
+	want := []hostDir{
+		{host: "old.example.com", dir: "/base/example.com/old."},
+		{host: "moved.example.com", dir: "/base/example.com/moved."},
+	}
+	out := strings.Join([]string{
+		record("/base/example.com/old.", "1", "0", "0", "1752500000", "0", "0",
+			`{"redirect":"https://elsewhere.example"}`),
+		// index.html + a redirect: the redirect still decides the type.
+		record("/base/example.com/moved.", "1", "10", "1", "1752500001", "1", "0",
+			`{"redirect":"https://elsewhere.example/moved","redirectStatus":301}`),
+	}, "\n")
+
+	got := parseSites(want, out)
+	if old := got[0]; old.Type != typeRedirect ||
+		old.Redirect != "https://elsewhere.example" || old.RedirectStatus != 302 {
+		t.Errorf("old = %+v, want redirect → https://elsewhere.example (302)", old)
+	}
+	if moved := got[1]; moved.Type != typeRedirect ||
+		moved.Redirect != "https://elsewhere.example/moved" || moved.RedirectStatus != 301 {
+		t.Errorf("moved = %+v, want redirect → https://elsewhere.example/moved (301)", moved)
+	}
+}
+
 // A folder the remote said nothing about must still come back, as not-deployed.
 func TestParseSitesMissingRecord(t *testing.T) {
 	got := parseSites([]hostDir{{host: "a.example.com", dir: "/base/example.com/a."}}, "")

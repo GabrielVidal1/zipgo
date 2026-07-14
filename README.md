@@ -124,6 +124,10 @@ hides it). All keys are optional:
   "rewrite": "localhost:8080",     // reverse-proxy to this upstream instead of
                                    //   serving files (host:port, or a URL with
                                    //   scheme: "https://api.example.com")
+  "redirect": "https://elsewhere.example", // redirect every request to this URL
+                                   //   instead of serving files
+  "redirectStatus": 302,           // status used for "redirect" (default 302;
+                                   //   301/308 permanent, 302/307 temporary)
   "allowHttp": false               // true → also serve over plain HTTP (:80)
                                    //        instead of redirecting to HTTPS
 }
@@ -134,9 +138,32 @@ hides it). All keys are optional:
 - **`rewrite`** makes the site a reverse proxy: requests are forwarded to the
   given upstream rather than served from the folder (no `index.html` needed). A
   bare `host:port` dials plain HTTP; a `https://` URL proxies over TLS.
+- **`redirect`** turns the host into a redirect (no `index.html` needed — this is
+  the replacement for the `<meta http-equiv="refresh">` trick). The target must
+  be an **absolute** `http(s)` URL:
+  - a bare origin — `"https://elsewhere.example"` — **keeps the path and query**,
+    so deep links survive a domain move: `/blog/post?x=1` →
+    `https://elsewhere.example/blog/post?x=1`;
+  - a target with a path — `"https://elsewhere.example/moved"` — is used
+    verbatim: every request lands on that one URL.
+
+  A bare path (`"/new"`) is rejected: a redirect replaces the site's file server,
+  so it would redirect to itself forever. `redirect` also wins over `rewrite` —
+  `doctor` errors when both are set.
+- **`redirectStatus`** picks the status code — `301`/`308` (permanent) or
+  `302`/`307` (temporary). It defaults to **302**: browsers cache a 301 for a
+  long time, and in a folder-tree config a redirect should be as easy to undo as
+  the file that declared it. Set `301` once the move is final.
 - **`allowHttp: true`** serves the site on port 80 as well as 443 (by default
   every host is 301-redirected to HTTPS). No effect in localhost mode, which is
   already HTTP-only.
+
+```bash
+# retire old.example.com, keeping every deep link working
+mkdir -p .zipgo/example.com/old.
+echo '{"redirect": "https://new.example.com", "redirectStatus": 301}' \
+    > .zipgo/example.com/old./.zipgoconfig.json
+```
 
 Edits are picked up by the file watcher and hot-reloaded like any other change.
 
@@ -249,10 +276,11 @@ zipgo info <host> --json # that one site, as an object
 ```
 
 Each site is reported the way the server routes it — `type` is `static`, `spa`
-(an `index.html` next to an `assets/`, `static/`, `_next/` or `dist/` folder) or
-`proxy` (a `.zipgoconfig.json` `rewrite`), `enabled` is `false` for a site turned
-off with `"enable": false`, and an unreadable `.zipgoconfig.json` shows up as
-`configError` instead of being silently ignored. `sizeBytes`/`files` count a
+(an `index.html` next to an `assets/`, `static/`, `_next/` or `dist/` folder),
+`proxy` (a `.zipgoconfig.json` `rewrite`) or `redirect` (a `.zipgoconfig.json`
+`redirect`, reported with its `redirect` target and `redirectStatus`), `enabled`
+is `false` for a site turned off with `"enable": false`, and an unreadable
+`.zipgoconfig.json` shows up as `configError` instead of being silently ignored. `sizeBytes`/`files` count a
 site's **own** content: nested subdomain folders are sites of their own and are
 excluded, so an apex isn't reported as the sum of its whole domain.
 
@@ -293,6 +321,11 @@ a folder passed as an argument) and reports, per host:
 | Folder in the domains root with no dot — silently ignored by the server | warning |
 | Subdomain folder that forgot its trailing dot (`docs.example.com`) | warning |
 | A `rewrite` upstream zipgo cannot turn into a dial address | error |
+| A `redirect` target that isn't an absolute `http(s)` URL (a path would loop) | error |
+| A `redirectStatus` that isn't 301/302/307/308 | error |
+| `redirect` and `rewrite` both set — the proxy upstream is never used | error |
+| `redirect` on a folder that still has an `index.html` (never served) | warning |
+| `redirectStatus` without a `redirect` target | warning |
 | Two folders claiming the same host (`a.b.` and `b./a.`) | error |
 
 ```bash
