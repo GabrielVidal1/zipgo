@@ -243,6 +243,7 @@ func BuildConfig(domainSites []DomainSites, metricsAddr string) (*caddy.Config, 
 				if err != nil {
 					return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
 				}
+				mr = guard(mr, s)
 				routes = append(routes, mr)
 				if httpAllowed {
 					httpRoutes = append(httpRoutes, mr)
@@ -319,7 +320,25 @@ func domainRoute(s sites.Site, rootDomain string) (obj, error) {
 // rewrite upstream, otherwise the file_server subroute. A site that (wrongly)
 // sets both redirect and rewrite redirects — doctor flags the combination.
 // stripPrefix is the localhost path prefix to strip ("" in domain mode).
+// A site with basicAuth is wrapped so the credential check runs before anything
+// is served — files, SPA fallback and proxied upstreams alike.
 func siteHandler(s sites.Site, stripPrefix string) (obj, error) {
+	inner, err := unguardedSiteHandler(s, stripPrefix)
+	if err != nil {
+		return nil, err
+	}
+	if auth := basicAuthHandler(s.Config); auth != nil {
+		return obj{"handler": "subroute", "routes": arr{
+			obj{"handle": arr{auth}},
+			obj{"handle": arr{inner}},
+		}}, nil
+	}
+	return inner, nil
+}
+
+// unguardedSiteHandler picks what the site serves, before any auth check is
+// layered on top: a redirect, a proxied upstream, or its own files.
+func unguardedSiteHandler(s sites.Site, stripPrefix string) (obj, error) {
 	if s.Config.Redirect != "" {
 		return redirectHandler(s, stripPrefix), nil
 	}
@@ -372,6 +391,47 @@ func redirectLocation(redirect string) string {
 		return r
 	}
 	return strings.TrimSuffix(r, "/") + "{http.request.uri}"
+}
+
+// basicAuthHandler builds the Caddy authentication handler for a site's
+// basicAuth config, or nil when the site is public. Passwords are bcrypt
+// hashes; the hash cache keeps a protected site from paying a full bcrypt
+// comparison on every request.
+func basicAuthHandler(c sites.Config) obj {
+	if !c.Protected() {
+		return nil
+	}
+	users := make([]string, 0, len(c.BasicAuth))
+	for u := range c.BasicAuth {
+		users = append(users, u)
+	}
+	sort.Strings(users) // stable config across reloads
+	accounts := arr{}
+	for _, u := range users {
+		accounts = append(accounts, obj{"username": u, "password": c.BasicAuth[u]})
+	}
+	return obj{
+		"handler": "authentication",
+		"providers": obj{"http_basic": obj{
+			"hash":       obj{"algorithm": "bcrypt"},
+			"accounts":   accounts,
+			"hash_cache": obj{},
+		}},
+	}
+}
+
+// guard prepends a site's basic-auth check to an already-built route's handler
+// chain, so an endpoint served beside the site (sub-domains-meta) is protected
+// with it rather than leaking the child listing of a password-protected site.
+func guard(route obj, s sites.Site) obj {
+	auth := basicAuthHandler(s.Config)
+	if auth == nil {
+		return route
+	}
+	if h, ok := route["handle"].(arr); ok {
+		route["handle"] = append(arr{auth}, h...)
+	}
+	return route
 }
 
 // proxyHandler builds a reverse_proxy subroute forwarding to the site's rewrite
@@ -471,6 +531,7 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr string) (*caddy
 				if err != nil {
 					return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.LocalhostPath(ds.Domain), err)
 				}
+				mr = guard(mr, s)
 				routes = append(routes, mr)
 			}
 

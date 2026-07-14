@@ -39,6 +39,12 @@ type Config struct {
 	// AllowHTTP, when true, also serves the site over plain HTTP (port 80)
 	// instead of redirecting to HTTPS. Has no effect in localhost mode.
 	AllowHTTP *bool `json:"allowHttp,omitempty"`
+	// BasicAuth, when non-empty, puts the whole site behind HTTP basic auth.
+	// It maps a username to that user's *bcrypt hash* — never a plaintext
+	// password (generate one with `caddy hash-password` or `htpasswd -nbB`).
+	// It applies to static, SPA and rewrite (proxy) sites alike, and to the
+	// site's own sub-domains-meta endpoint.
+	BasicAuth map[string]string `json:"basicAuth,omitempty"`
 }
 
 // DefaultRedirectStatus is the status code used for a "redirect" site that does
@@ -58,6 +64,9 @@ func (c Config) RedirectCode() int {
 	}
 	return c.RedirectStatus
 }
+
+// Protected reports whether the site is behind HTTP basic auth.
+func (c Config) Protected() bool { return len(c.BasicAuth) > 0 }
 
 // HTTPAllowed reports whether the site opts into being served over plain HTTP
 // (default false).

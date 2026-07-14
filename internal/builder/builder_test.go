@@ -230,3 +230,103 @@ func TestSecurityHeaders(t *testing.T) {
 		t.Fatalf("CSP: want %v, got %v", want, got)
 	}
 }
+
+// bcryptHash is a real hash (`htpasswd -nbB claude s3cret`).
+const bcryptHash = "$2y$05$lxJfaQMx3WaZsB7K5ZvLz.5Sw1mdcAx2fwJycu2oQJfxqLSySlTK."
+
+func protectedConfig() sites.Config {
+	return sites.Config{BasicAuth: map[string]string{"claude": bcryptHash}}
+}
+
+// authOf digs the authentication handler out of a site handler, or nil when the
+// site is public.
+func authOf(h obj) obj {
+	routes, ok := h["routes"].(arr)
+	if !ok || len(routes) == 0 {
+		return nil
+	}
+	first, ok := routes[0].(obj)["handle"].(arr)
+	if !ok || len(first) == 0 {
+		return nil
+	}
+	handler, ok := first[0].(obj)
+	if !ok || handler["handler"] != "authentication" {
+		return nil
+	}
+	return handler
+}
+
+func TestBasicAuthHandler(t *testing.T) {
+	if h := basicAuthHandler(sites.Config{}); h != nil {
+		t.Fatalf("public site: want no auth handler, got %v", h)
+	}
+	if h := basicAuthHandler(sites.Config{BasicAuth: map[string]string{}}); h != nil {
+		t.Fatalf("empty basicAuth: want no auth handler, got %v", h)
+	}
+
+	h := basicAuthHandler(protectedConfig())
+	basic := h["providers"].(obj)["http_basic"].(obj)
+	if got := basic["hash"].(obj)["algorithm"]; got != "bcrypt" {
+		t.Errorf("hash algorithm = %v, want bcrypt", got)
+	}
+	accounts := basic["accounts"].(arr)
+	if len(accounts) != 1 {
+		t.Fatalf("accounts = %d, want 1", len(accounts))
+	}
+	acct := accounts[0].(obj)
+	if acct["username"] != "claude" || acct["password"] != bcryptHash {
+		t.Errorf("account = %v, want claude/%s", acct, bcryptHash)
+	}
+}
+
+// The auth check must run before anything is served, whatever the site is:
+// static files, an SPA, or a proxied upstream.
+func TestSiteHandlerBasicAuth(t *testing.T) {
+	tests := []struct {
+		name string
+		site sites.Site
+		want bool
+	}{
+		{"public static site", sites.Site{Path: "."}, false},
+		{"protected static site", sites.Site{Path: ".", Config: protectedConfig()}, true},
+		{"protected SPA", sites.Site{Path: ".", IsSPA: true, Config: protectedConfig()}, true},
+		{"public proxy", sites.Site{Path: ".", Config: sites.Config{Rewrite: "localhost:8080"}}, false},
+		{"protected proxy", sites.Site{Path: ".", Config: sites.Config{
+			Rewrite:   "localhost:8080",
+			BasicAuth: map[string]string{"claude": bcryptHash},
+		}}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h, err := siteHandler(tc.site, "")
+			if err != nil {
+				t.Fatalf("siteHandler: %v", err)
+			}
+			if got := authOf(h) != nil; got != tc.want {
+				t.Fatalf("auth guard = %v, want %v (handler: %v)", got, tc.want, h)
+			}
+		})
+	}
+}
+
+// A protected site's sub-domains-meta endpoint must not leak its child listing.
+func TestGuardMetaRoute(t *testing.T) {
+	route := obj{"handle": arr{obj{"handler": "static_response"}}}
+
+	public := guard(obj{"handle": arr{obj{"handler": "static_response"}}}, sites.Site{})
+	if h := public["handle"].(arr); len(h) != 1 {
+		t.Fatalf("public meta route: want 1 handler, got %d", len(h))
+	}
+
+	protected := guard(route, sites.Site{Config: protectedConfig()})
+	h := protected["handle"].(arr)
+	if len(h) != 2 {
+		t.Fatalf("protected meta route: want 2 handlers, got %d", len(h))
+	}
+	if got := h[0].(obj)["handler"]; got != "authentication" {
+		t.Fatalf("first handler = %v, want authentication", got)
+	}
+	if got := h[1].(obj)["handler"]; got != "static_response" {
+		t.Fatalf("second handler = %v, want static_response", got)
+	}
+}

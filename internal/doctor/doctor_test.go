@@ -30,6 +30,10 @@ func tree(t *testing.T, files map[string]string) string {
 	return root
 }
 
+// testHash is a real bcrypt hash (`htpasswd -nbB claude s3cret`), so the tests
+// exercise the same validation Caddy's comparison would.
+const testHash = "$2y$05$lxJfaQMx3WaZsB7K5ZvLz.5Sw1mdcAx2fwJycu2oQJfxqLSySlTK."
+
 // find returns the first finding whose message contains sub.
 func find(rep Report, sub string) (Finding, bool) {
 	for _, f := range rep.Findings {
@@ -268,6 +272,58 @@ func TestCheck(t *testing.T) {
 			wantLevel: Error,
 			wantHost:  "a.b.example.com",
 		},
+		{
+			name: "a valid basicAuth hash is clean",
+			files: map[string]string{
+				"example.com/index.html":                 "<html></html>",
+				"example.com/staging./index.html":        "<html></html>",
+				"example.com/staging./.zipgoconfig.json": `{"basicAuth": {"claude": "` + testHash + `"}}`,
+			},
+		},
+		{
+			name: "a plaintext basicAuth password is an error",
+			files: map[string]string{
+				"example.com/index.html":                 "<html></html>",
+				"example.com/staging./index.html":        "<html></html>",
+				"example.com/staging./.zipgoconfig.json": `{"basicAuth": {"claude": "hunter2"}}`,
+			},
+			wantMsg:   "looks like a plaintext password",
+			wantLevel: Error,
+			wantHost:  "staging.example.com",
+		},
+		{
+			name: "a truncated bcrypt hash is an error",
+			files: map[string]string{
+				"example.com/index.html":                 "<html></html>",
+				"example.com/staging./index.html":        "<html></html>",
+				"example.com/staging./.zipgoconfig.json": `{"basicAuth": {"claude": "$2y$05$tooshort"}}`,
+			},
+			wantMsg:   "not a valid bcrypt hash",
+			wantLevel: Error,
+			wantHost:  "staging.example.com",
+		},
+		{
+			name: "an empty username is an error",
+			files: map[string]string{
+				"example.com/index.html":                 "<html></html>",
+				"example.com/staging./index.html":        "<html></html>",
+				"example.com/staging./.zipgoconfig.json": `{"basicAuth": {"": "` + testHash + `"}}`,
+			},
+			wantMsg:   "empty username",
+			wantLevel: Error,
+			wantHost:  "staging.example.com",
+		},
+		{
+			name: "an empty basicAuth block warns that the site is public",
+			files: map[string]string{
+				"example.com/index.html":                 "<html></html>",
+				"example.com/staging./index.html":        "<html></html>",
+				"example.com/staging./.zipgoconfig.json": `{"basicAuth": {}}`,
+			},
+			wantMsg:   "is empty",
+			wantLevel: Warn,
+			wantHost:  "staging.example.com",
+		},
 	}
 
 	for _, tc := range tests {
@@ -353,5 +409,33 @@ func TestInvalidUpstream(t *testing.T) {
 		if invalidUpstream(u) == "" {
 			t.Errorf("invalidUpstream(%q) = ok, want a reason", u)
 		}
+	}
+}
+
+func TestInvalidBcrypt(t *testing.T) {
+	tests := []struct {
+		name string
+		hash string
+		ok   bool
+	}{
+		{"htpasswd -nbB hash ($2y$)", testHash, true},
+		{"caddy hash-password hash ($2a$)", "$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR7hx4IjWJPDhjvG", true},
+		{"$2b$ variant", "$2b$12$k7t1FaIvJm0jRZDBqAY1yeSw.RVUeYZgtIB8QGDsi/pDPNQCoQ3RC", true},
+		{"empty", "", false},
+		{"plaintext password", "hunter2", false},
+		{"plaintext that starts with a dollar", "$uper$ecret", false},
+		{"truncated hash", "$2y$05$tooshort", false},
+		{"bogus cost", "$2y$99$lxJfaQMx3WaZsB7K5ZvLz.5Sw1mdcAx2fwJycu2oQJfxqLSySlTK.", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := invalidBcrypt(tc.hash)
+			if tc.ok && bad != "" {
+				t.Errorf("invalidBcrypt(%q) = %q, want ok", tc.hash, bad)
+			}
+			if !tc.ok && bad == "" {
+				t.Errorf("invalidBcrypt(%q) = ok, want a reason", tc.hash)
+			}
+		})
 	}
 }

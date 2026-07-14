@@ -24,7 +24,6 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
      yours in the same commit that ticks its checkbox. -->
 
 - [zipgo] Custom headers in .zipgoconfig.json (headers map merged into the security-headers handler) — @2026-07-14T18:51Z
-- [zipgo] Basic-auth in .zipgoconfig.json (basicAuth map of user → bcrypt hash) — @2026-07-14T18:53Z
 
 ## Target
 
@@ -104,8 +103,15 @@ Ordered roughly by value. Each item is one session of work.
 - [ ] Custom headers in `.zipgoconfig.json` (`"headers": {"Cache-Control": "..."}`)
       merged into the security-headers handler, so a site can set caching or CORS
       without a proxy in front.
-- [ ] Basic-auth in `.zipgoconfig.json` (`"basicAuth": {"user": "<bcrypt hash>"}`)
+- [x] Basic-auth in `.zipgoconfig.json` (`"basicAuth": {"user": "<bcrypt hash>"}`)
       — put a staging subdomain behind a password with one file.
+      The check wraps whatever the site serves, so it covers static files, SPA
+      routes, a `rewrite` upstream and the site's own `sub-domains-meta` (which
+      would otherwise leak the child listing of a protected site). Values are
+      bcrypt hashes only — `doctor` errors on a plaintext password (Caddy
+      compares against a hash, so it would lock everyone out *and* commit a
+      secret), on a bogus hash and on an empty username. `ls`/`info --json`
+      report `protected`, never the hashes.
 - [ ] Serve a custom `404.html` when a non-SPA site has one, instead of Caddy's
       default plain-text 404.
 - [ ] Structured access logs (JSON to stdout, one line per request with host,

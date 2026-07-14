@@ -38,11 +38,15 @@ type Site struct {
 	RedirectStatus int    `json:"redirectStatus,omitempty"`
 	// Enabled is false when .zipgoconfig.json sets "enable": false — the site is
 	// deployed but deliberately not served.
-	Enabled  bool   `json:"enabled"`
-	Deployed bool   `json:"deployed"`
-	Size     int64  `json:"sizeBytes"`
-	Files    int    `json:"files"`
-	Modified string `json:"modified,omitempty"` // RFC3339, UTC
+	Enabled bool `json:"enabled"`
+	// Protected is true when .zipgoconfig.json sets "basicAuth" — the site is
+	// served, but only to a caller with credentials. The hashes themselves are
+	// deliberately not exposed here.
+	Protected bool   `json:"protected"`
+	Deployed  bool   `json:"deployed"`
+	Size      int64  `json:"sizeBytes"`
+	Files     int    `json:"files"`
+	Modified  string `json:"modified,omitempty"` // RFC3339, UTC
 	// ConfigError reports an unreadable .zipgoconfig.json — the site's own
 	// folder exists but the server will refuse to build a config from it.
 	ConfigError string `json:"configError,omitempty"`
@@ -168,6 +172,7 @@ func parseSites(want []hostDir, out string) []Site {
 			s.ConfigError = err.Error()
 		} else {
 			s.Enabled = cfg.Enabled()
+			s.Protected = cfg.Protected()
 			if cfg.Rewrite != "" {
 				s.Type = typeProxy
 				s.Proxy = cfg.Rewrite
@@ -345,6 +350,9 @@ func Info(target deploy.Target, host string, asJSON bool) error {
 	}
 	if !s.Enabled {
 		kind += " (disabled: enable=false)"
+	}
+	if s.Protected {
+		kind += " 🔒 basic-auth"
 	}
 	fmt.Printf("   Kind   : %s\n", kind)
 	fmt.Printf("   Size   : %s\n", humanSize(s.Size))
