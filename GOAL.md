@@ -18,6 +18,13 @@ Falsifiable version of "done": someone who has never read the docs can put a
 site on a fresh VPS at `https://their.domain` in under two minutes, with one
 `curl | sh` and one `cp -r`, and never open an editor.
 
+## Being worked on
+
+<!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
+     yours in the same commit that ticks its checkbox. -->
+
+- [zipgo] `zipgo doctor` — check the domains folder and report per-site problems, exit 1 when anything is wrong — @2026-07-14T14:05Z
+
 ## Target
 
 Who this is for, in priority order:
