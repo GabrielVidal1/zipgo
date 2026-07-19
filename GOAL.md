@@ -23,8 +23,6 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
-- Per-site deploy history + `zipgo rollback <host>` (`.zipgo-versions/`).
-
 
 ## Target
 
@@ -140,9 +138,18 @@ Ordered roughly by value. Each item is one session of work.
       every later feature depends on.
 - [ ] `zipgo deploy --prune` / dry-run summary that prints exactly which remote
       files would be added, replaced and deleted before touching anything.
-- [ ] Per-site deploy history: keep the last N deploys under a hidden
+- [x] Per-site deploy history: keep the last N deploys under a hidden
       `.zipgo-versions/` folder and add `zipgo rollback <host>` to swap the
       previous one back in.
+      `zipgo deploy` snapshots a site's own content into
+      `<site>/.zipgo-versions/<UTC-stamp>/` before overwriting it (last
+      `--keep N`, default 5; `--no-history`/`--keep 0` off), excluding nested
+      subdomains and the history folder itself. `zipgo rollback <host>` restores
+      the previous deploy (or a named snapshot / `--list` / `--list --json`), and
+      snapshots the current content first so the rollback is reversible. The
+      folder is hidden from the file_server, protected from the `--delete`
+      mirror, and excluded from `ls`/`info` sizes. Name lives once in
+      `sites.VersionsDirName`.
 - [ ] Landing-page refresh — the generated index at the apex when no site is
       deployed should use the same `sub-domains-meta` metadata the API already
       computes, so it stops being a separate code path.

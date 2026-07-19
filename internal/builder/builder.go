@@ -385,8 +385,9 @@ func unguardedSiteHandler(s sites.Site, stripPrefix string) (obj, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Hide subdomain folders and the per-site config file from the file_server.
-	hide := append(dotHide(absPath), filepath.Join(absPath, sites.ConfigFileName))
+	// Hide subdomain folders, the per-site config file and the deploy-history
+	// snapshots (.zipgo-versions) from the file_server.
+	hide := append(dotHide(absPath), filepath.Join(absPath, sites.ConfigFileName), filepath.Join(absPath, sites.VersionsDirName))
 	notFound := ""
 	if s.HasNotFoundPage() {
 		notFound = s.NotFoundPage

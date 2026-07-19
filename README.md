@@ -253,6 +253,7 @@ zipgo serve     # start the server (default when no command is given)
 zipgo deploy    # rsync a local dir to a remote zipgo host over SSH
 zipgo ls        # list sites deployed on the remote target
 zipgo info      # show a deployed site's remote path, size and mtime
+zipgo rollback  # swap a previous deploy back into place (--list for history)
 zipgo doctor    # check the local domains folder for broken sites
 zipgo enable    # install and start the systemd user service
 zipgo disable   # stop and remove the systemd user service
@@ -276,6 +277,13 @@ zipgo deploy dist/ -d love-letters.game.gabvdl.xyz \
 `-d/--domain` is repeatable (deploy the same build to several hosts). Flags:
 `--ssh/--target user@host:/base/path`, `--exclude <pat>` (repeatable),
 `--no-delete` (don't mirror), `-n/--dry-run`.
+
+Every deploy first **snapshots** the site's current content into a hidden
+`.zipgo-versions/` folder before overwriting it, keeping the last **5** deploys
+so you can `zipgo rollback` a bad push (see below). `--keep N` changes how many
+are retained; `--no-history` (or `--keep 0`) turns snapshotting off. The history
+folder is never served, never mirrored away by `--delete`, and is excluded from a
+site's reported size.
 
 #### Config-driven deploy
 
@@ -370,6 +378,25 @@ love-letters.game.gabvdl.xyz    static
   "modified": "2026-07-14T14:13:31Z"
 }
 ```
+
+### `zipgo rollback`
+
+Swap a previous deploy back into place. Because every `zipgo deploy` snapshots
+the site before overwriting it (last 5 by default, `--keep N` on deploy), a bad
+push is one command to undo:
+
+```bash
+zipgo rollback love-letters.game.gabvdl.xyz            # restore the previous deploy
+zipgo rollback love-letters.game.gabvdl.xyz --list     # show the history, newest first
+zipgo rollback love-letters.game.gabvdl.xyz 20260719T181259Z  # restore a specific one
+```
+
+The current live content is itself snapshotted before it is replaced, so a
+rollback is reversible — roll back again to return to where you were. Nested
+subdomain sites (their own trailing-dot folders) and the history folder are never
+touched. `--list --json` emits the history as an array (`name`, `modified`,
+`sizeBytes`, `files`) for scripts and dashboards; the target is resolved from
+`.zipgo.json` unless `--ssh`/`--target` is given.
 
 ### `zipgo doctor`
 

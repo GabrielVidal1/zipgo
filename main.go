@@ -56,6 +56,8 @@ configured project deploys with just 'zipgo deploy':
       --no-delete  do not mirror (keep remote files missing from the source)
       --include-subdomains  let the mirror also delete nested subdomain
                  folders (by default trailing-dot subdomain dirs are kept)
+      --keep N   keep the last N deploys under .zipgo-versions for rollback
+                 (default 5); --no-history / --keep 0 disables snapshots
   -n, --dry-run  show what rsync would do; skip remote mkdir
 
 Examples:
@@ -82,6 +84,22 @@ read from .zipgo.json unless --ssh/--target is given).
                                            modified)
                              ls <host>   → array of files in the site's folder
                              info <host> → that one site as an object
+`
+
+const rollbackUsage = `Usage: zipgo rollback <host> [version] [--list] [--json] [--ssh user@host:/base]
+
+Swap a previous deploy back into place. Every 'zipgo deploy' snapshots the site's
+current content under a hidden .zipgo-versions/ folder before overwriting it
+(the last N deploys, --keep N on deploy, default 5), and rollback restores one.
+
+  zipgo rollback <host>            restore the previous deploy (the newest snapshot)
+  zipgo rollback <host> <version>  restore a specific snapshot (a name from --list)
+  zipgo rollback <host> --list     show the deploy history, newest first
+      --json                       machine-readable history (with --list)
+
+The current content is itself snapshotted before it is replaced, so a rollback
+can be undone by rolling back again. Nested subdomain sites and the history
+folder are never touched.
 `
 
 const doctorUsage = `Usage: zipgo doctor [domains-folder] [--strict]
@@ -160,6 +178,30 @@ func main() {
 			}
 		}
 		return
+	case "rollback":
+		host, version, ssh, list, asJSON, err := parseRollbackArgs(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, rollbackUsage)
+			os.Exit(2)
+		}
+		if host == "" {
+			fmt.Fprintf(os.Stderr, "❌  rollback requires a host\n\n%s", rollbackUsage)
+			os.Exit(2)
+		}
+		target, err := resolveTarget(ssh)
+		if err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		if list {
+			if err := remote.ListVersions(target, host, asJSON); err != nil {
+				log.Fatalf("❌  %v\n", err)
+			}
+			return
+		}
+		if err := remote.Rollback(target, host, version); err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		return
 	case "doctor":
 		dir, strict, err := parseDoctorArgs(os.Args[2:])
 		if err != nil {
@@ -186,6 +228,7 @@ func main() {
 		fmt.Println("  deploy   rsync a local dir to a remote zipgo host over SSH")
 		fmt.Println("  ls       list sites deployed on the remote target")
 		fmt.Println("  info     show a deployed site's remote path, size and mtime")
+		fmt.Println("  rollback swap a previous deploy back into place (--list to see history)")
 		fmt.Println("  doctor   check the local domains folder for broken sites")
 		fmt.Println("  enable   Install and start the systemd user service")
 		fmt.Println("  disable  Stop and remove the systemd user service")
@@ -194,6 +237,8 @@ func main() {
 		fmt.Print(deployUsage)
 		fmt.Println()
 		fmt.Print(manageUsage)
+		fmt.Println()
+		fmt.Print(rollbackUsage)
 		fmt.Println()
 		fmt.Print(doctorUsage)
 		return
@@ -449,6 +494,45 @@ func parseManageArgs(args []string) (host, ssh string, asJSON bool, err error) {
 		}
 	}
 	return host, ssh, asJSON, nil
+}
+
+// parseRollbackArgs parses the args for `rollback`: a required positional host,
+// an optional positional version, and --list/--json/--ssh flags.
+func parseRollbackArgs(args []string) (host, version, ssh string, list, asJSON bool, err error) {
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--ssh" || a == "--target":
+			i++
+			if i >= len(args) {
+				return "", "", "", false, false, fmt.Errorf("%s requires a value", a)
+			}
+			ssh = args[i]
+		case strings.HasPrefix(a, "--ssh="):
+			ssh = a[len("--ssh="):]
+		case strings.HasPrefix(a, "--target="):
+			ssh = a[len("--target="):]
+		case a == "--list" || a == "--ls":
+			list = true
+		case a == "--json":
+			asJSON = true
+		case strings.HasPrefix(a, "-"):
+			return "", "", "", false, false, fmt.Errorf("unknown flag %q", a)
+		default:
+			positional = append(positional, a)
+		}
+	}
+	switch len(positional) {
+	case 0:
+	case 1:
+		host = positional[0]
+	case 2:
+		host, version = positional[0], positional[1]
+	default:
+		return "", "", "", false, false, fmt.Errorf("unexpected argument %q", positional[2])
+	}
+	return host, version, ssh, list, asJSON, nil
 }
 
 // watchAndReload watches domainsDir for filesystem changes and calls reload()

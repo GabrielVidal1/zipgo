@@ -125,9 +125,13 @@ func siteDirs(target deploy.Target) ([]hostDir, error) {
 
 // statScript builds a shell script that prints one tab-separated record per
 // folder: dir, exists, bytes, files, mtime (epoch), index.html?, bundle folder?,
-// base64 .zipgoconfig.json. The two finds prune nested subdomain folders so each
-// site is measured on its own content only.
+// base64 .zipgoconfig.json. The two finds prune nested subdomain folders and the
+// deploy-history folder (.zipgo-versions) so each site is measured on its own
+// current content only.
 func statScript(dirs []string) string {
+	// prune drops both trailing-dot subdomain folders (separate sites) and the
+	// deploy-history snapshots from the size/file counts.
+	prune := "\\( -name '*.' -o -name " + quote(sites.VersionsDirName) + " \\) -type d -prune"
 	var b strings.Builder
 	b.WriteString("for d in")
 	for _, d := range dirs {
@@ -135,8 +139,8 @@ func statScript(dirs []string) string {
 	}
 	b.WriteString("; do\n")
 	b.WriteString("  e=0; [ -d \"$d\" ] && e=1\n")
-	b.WriteString("  sz=$(find \"$d\" -mindepth 1 -name '*.' -type d -prune -o -type f -printf '%s\\n' 2>/dev/null | awk '{s+=$1} END{print s+0}')\n")
-	b.WriteString("  nf=$(find \"$d\" -mindepth 1 -name '*.' -type d -prune -o -type f -print 2>/dev/null | wc -l | tr -d ' ')\n")
+	b.WriteString("  sz=$(find \"$d\" -mindepth 1 " + prune + " -o -type f -printf '%s\\n' 2>/dev/null | awk '{s+=$1} END{print s+0}')\n")
+	b.WriteString("  nf=$(find \"$d\" -mindepth 1 " + prune + " -o -type f -print 2>/dev/null | wc -l | tr -d ' ')\n")
 	b.WriteString("  mt=$(date -r \"$d\" '+%s' 2>/dev/null)\n")
 	b.WriteString("  ix=0; [ -f \"$d/index.html\" ] && ix=1\n")
 	b.WriteString("  bd=0; for a in " + strings.Join(bundleDirs, " ") + "; do [ -d \"$d/$a\" ] && bd=1; done\n")
