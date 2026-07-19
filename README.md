@@ -25,6 +25,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **Custom 404 page** — drop a `404.html` in a static site's folder and it becomes the body of its 404s
 - **Password-protected sites** — `zipgo password set <host>` puts a whole site behind a login page (one shared password, a session cookie); deploys keep the lock. `"basicAuth"` is there too for HTTP basic auth
 - **Switch a site off** — `zipgo off <host>` takes a deployed site down (410 Gone, nested subdomains included) without deleting it; `zipgo on <host>` brings it back
+- **Deploy history & rollback** — every `zipgo deploy` keeps the site's previous content (last 5, `--keep N`) in a hidden `.zipgo-versions/` folder; `zipgo rollback <host>` puts the previous deploy back, reversibly
 - **Back-office** — `zipgo admin set admin.yourdomain.com` gives a domain a password-protected page, made for a phone, to switch any of its sites (sub and sub-sub domains included) off and on, flip their feature flags and put a password on one; `--all` makes it the one page for every domain on the server. It edits the same `.zipgoconfig.json` files the CLI does — no state of its own
 - **Feature flags** — a site declares switches for unfinished features; its code reads them from `/__zipgo/flags.json`, zipgo answers 404 on the paths of the ones that are off, and you flip them from the back-office or `zipgo flag` — no redeploy, and deploys never flip them back
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
@@ -475,6 +476,7 @@ zipgo on        # switch it back on
 zipgo password  # put a site behind a login page, rotate or remove its password
 zipgo admin     # set up a domain's back-office (a page to switch its sites off/on)
 zipgo flag      # list, switch, add or remove a site's feature flags
+zipgo rollback  # swap a previous deploy back into place (--list for history)
 zipgo doctor    # check the local domains folder for broken sites
 zipgo enable    # install and start the systemd user service
 zipgo disable   # stop and remove the systemd user service
@@ -525,6 +527,13 @@ before it prunes the remote:
      － delete   assets/app-old.js
    (dry run — nothing was changed)
 ```
+
+Every deploy first **snapshots** the site's current content into a hidden
+`.zipgo-versions/` folder before overwriting it, keeping the last **5** deploys
+so you can `zipgo rollback` a bad push (see below). `--keep N` changes how many
+are retained; `--no-history` (or `--keep 0`) turns snapshotting off. The history
+folder is never served, never mirrored away by `--delete`, and is excluded from a
+site's reported size.
 
 #### Config-driven deploy
 
@@ -744,6 +753,27 @@ zipgo flag rm spore.example.com arena
 `add` creates a flag (off unless `--on`) or updates its description and paths
 (`--path ""` clears them), keeping its switch. `zipgo doctor` errors on a bad
 name or path and warns about an unknown key in a flag object.
+
+### `zipgo rollback`
+
+Swap a previous deploy back into place. Because every `zipgo deploy` snapshots
+the site before overwriting it (last 5 by default, `--keep N` on deploy), a bad
+push is one command to undo:
+
+```bash
+zipgo rollback love-letters.game.gabvdl.xyz            # restore the previous deploy
+zipgo rollback love-letters.game.gabvdl.xyz --list     # show the history, newest first
+zipgo rollback love-letters.game.gabvdl.xyz 20260719T181259Z  # restore a specific one
+```
+
+The current live content is itself snapshotted before it is replaced, so a
+rollback is reversible — roll back again to return to where you were. Nested
+subdomain sites (their own trailing-dot folders), the history folder and the
+site's `.zipgoconfig.json` are never touched: like a deploy, a rollback ships
+content, not server state — a site that is off stays off, a locked one stays
+locked, and feature flags keep their switch. `--list --json` emits the history as an array (`name`, `modified`,
+`sizeBytes`, `files`) for scripts and dashboards; the target is resolved from
+`.zipgo.json` unless `--ssh`/`--target` is given.
 
 ### `zipgo doctor`
 

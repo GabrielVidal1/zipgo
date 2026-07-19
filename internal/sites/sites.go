@@ -20,6 +20,14 @@ const ConfigFileName = ".zipgoconfig.json"
 // index.html), so the file only means something for a static site.
 const NotFoundFileName = "404.html"
 
+// VersionsDirName is the hidden folder, at a site's own root, where `zipgo
+// deploy` snapshots the previous content of that site before overwriting it, so
+// `zipgo rollback` can swap an earlier deploy back in. It is never served (the
+// file_server hides it) and is excluded from a site's size, sub-domains-meta and
+// the deploy mirror. A leading dot keeps discovery from mistaking it for content
+// (see Discover, which skips dot-prefixed entries).
+const VersionsDirName = ".zipgo-versions"
+
 // Config holds the optional per-site settings read from .zipgoconfig.json.
 // Pointer fields distinguish "unset" (nil → use the default) from an explicit
 // true/false in the file.

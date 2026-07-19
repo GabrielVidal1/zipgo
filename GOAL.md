@@ -185,13 +185,19 @@ Ordered roughly by value. Each item is one session of work.
       `zipgo flag on|off|add|rm`; a deploy never flips them (the build declares,
       the server decides — `deploy.MergeFlags`). First user: Ballance's co-op
       levels (2026-10-20).
-- [ ] Per-site deploy history: keep the last N deploys under a hidden
+- [x] Per-site deploy history: keep the last N deploys under a hidden
       `.zipgo-versions/` folder and add `zipgo rollback <host>` to swap the
       previous one back in.
-      Already implemented end-to-end (snapshot on deploy, `zipgo rollback
-      <host> [version]`, `--keep`/`--no-history`, table tests) on branch
-      `feat/deploy-history` (`01428d0`), sitting as open PR #1 — not merged
-      into `main`, so leave unchecked until it lands.
+      `zipgo deploy` snapshots a site's own content into
+      `<site>/.zipgo-versions/<UTC-stamp>/` before overwriting it (last
+      `--keep N`, default 5; `--no-history`/`--keep 0` off), excluding nested
+      subdomains, the history folder and the site's `.zipgoconfig.json`. `zipgo rollback <host>` restores
+      the previous deploy (or a named snapshot / `--list` / `--list --json`), and
+      snapshots the current content first so the rollback is reversible. The
+      folder is hidden from the file_server, protected from the `--delete`
+      mirror, and excluded from `ls`/`info` sizes; a rollback never restores an
+      old config (switch, lock and flags stay as the server has them). Name
+      lives once in `sites.VersionsDirName` (2026-10-29, PR #1).
 - [ ] Landing-page refresh — the generated index at the apex when no site is
       deployed should use the same `sub-domains-meta` metadata the API already
       computes, so it stops being a separate code path.
