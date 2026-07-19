@@ -243,35 +243,31 @@ func Run(o Options) error {
 		fmt.Printf("🌐  %s\n", host)
 		fmt.Printf("   → %s:%s\n", tgt.Host, remoteDir)
 
-		if !o.DryRun {
-			// Recursively create the subdomain folder tree (trailing dots and
-			// all). Quote the path so the remote shell keeps it intact.
-			mkdir := exec.Command("ssh", tgt.Host, "mkdir -p '"+remoteDir+"'")
-			mkdir.Stdout, mkdir.Stderr = os.Stdout, os.Stderr
-			if err := mkdir.Run(); err != nil {
-				return fmt.Errorf("creating remote dir %q: %w", remoteDir, err)
-			}
-		}
+		dest := tgt.Host + ":" + remoteDir + "/"
 
-		args := []string{"-avz"}
-		if o.Delete {
-			args = append(args, "--delete")
-			// Auto-protect nested subdomain folders from the mirror: their
-			// trailing-dot directories are separate sites, not part of this
-			// build, so deploying a parent host must never delete a child.
-			if !o.IncludeSubdomains {
-				args = append(args, "--exclude="+subdomainExclude)
-			}
-		}
-		for _, ex := range o.Excludes {
-			args = append(args, "--exclude="+ex)
-		}
 		if o.DryRun {
-			args = append(args, "--dry-run")
+			// Summarise exactly what would change before touching anything:
+			// run rsync with --itemize-changes, capture its output and bucket
+			// each line into added/replaced/deleted. No remote mkdir — a
+			// missing destination just makes every path show up as "added",
+			// which is the right first-deploy summary.
+			out, err := exec.Command("rsync", rsyncArgs(o, src, dest, true)...).Output()
+			if err != nil {
+				return fmt.Errorf("rsync dry-run to %q: %w", host, cmdErr(err))
+			}
+			WriteSummary(os.Stdout, host, ParseItemized(string(out)))
+			continue
 		}
-		args = append(args, src, tgt.Host+":"+remoteDir+"/")
 
-		rsync := exec.Command("rsync", args...)
+		// Recursively create the subdomain folder tree (trailing dots and
+		// all). Quote the path so the remote shell keeps it intact.
+		mkdir := exec.Command("ssh", tgt.Host, "mkdir -p '"+remoteDir+"'")
+		mkdir.Stdout, mkdir.Stderr = os.Stdout, os.Stderr
+		if err := mkdir.Run(); err != nil {
+			return fmt.Errorf("creating remote dir %q: %w", remoteDir, err)
+		}
+
+		rsync := exec.Command("rsync", rsyncArgs(o, src, dest, false)...)
 		rsync.Stdout, rsync.Stderr = os.Stdout, os.Stderr
 		if err := rsync.Run(); err != nil {
 			return fmt.Errorf("rsync to %q: %w", host, err)
@@ -279,6 +275,40 @@ func Run(o Options) error {
 		fmt.Printf("   ✓ https://%s\n", host)
 	}
 	return nil
+}
+
+// rsyncArgs builds the rsync argument list for one job. dryRun switches it into
+// the summary mode used by --dry-run: --dry-run to touch nothing and
+// --itemize-changes so the output can be parsed by ParseItemized. It is split
+// out so the flag→arg mapping (delete/exclude/subdomain-protection) can be
+// unit-tested without shelling out.
+func rsyncArgs(o Options, src, dest string, dryRun bool) []string {
+	args := []string{"-avz"}
+	if o.Delete {
+		args = append(args, "--delete")
+		// Auto-protect nested subdomain folders from the mirror: their
+		// trailing-dot directories are separate sites, not part of this build,
+		// so deploying a parent host must never delete a child.
+		if !o.IncludeSubdomains {
+			args = append(args, "--exclude="+subdomainExclude)
+		}
+	}
+	for _, ex := range o.Excludes {
+		args = append(args, "--exclude="+ex)
+	}
+	if dryRun {
+		args = append(args, "--dry-run", "--itemize-changes")
+	}
+	return append(args, src, dest)
+}
+
+// cmdErr enriches an *exec.ExitError with the stderr rsync captured, since
+// Output() otherwise swallows it (only Stdout is returned to the caller).
+func cmdErr(err error) error {
+	if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+	}
+	return err
 }
 
 // ParseArgs parses the `zipgo deploy` argument list (everything after the
@@ -328,7 +358,9 @@ func ParseArgs(args []string) (Options, error) {
 			o.Excludes = append(o.Excludes, a[len("--exclude="):])
 		case a == "--no-delete":
 			o.Delete = false
-		case a == "--delete":
+		case a == "--delete" || a == "--prune":
+			// --prune is a clearer spelling of the default --delete mirror:
+			// remote files missing from the source are removed.
 			o.Delete = true
 		case a == "--include-subdomains":
 			o.IncludeSubdomains = true

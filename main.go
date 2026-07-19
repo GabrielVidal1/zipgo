@@ -53,10 +53,13 @@ configured project deploys with just 'zipgo deploy':
       --ssh, --target  remote destination (or a name from .zipgo.json "targets");
                  default: project/root config target
       --exclude  rsync exclude pattern (repeatable)
+      --delete, --prune  mirror: delete remote files missing from the source
+                 (this is the default; --prune is a clearer spelling)
       --no-delete  do not mirror (keep remote files missing from the source)
       --include-subdomains  let the mirror also delete nested subdomain
                  folders (by default trailing-dot subdomain dirs are kept)
-  -n, --dry-run  show what rsync would do; skip remote mkdir
+  -n, --dry-run  preview only: print exactly which remote files would be
+                 added, replaced and deleted, and change nothing
 
 Examples:
   zipgo deploy                                 # all hosts from package.json

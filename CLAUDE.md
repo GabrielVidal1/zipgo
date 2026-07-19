@@ -32,6 +32,8 @@ CLI subcommands: `zipgo serve` (default), `zipgo deploy` (rsync a local dir to a
 
 `deploy.ParseArgs` is **lenient** (src/-d/--ssh all optional); `deploy.Resolve(&opts, proj, root)` is the pure function that fills `opts.SSH` + `opts.Jobs []Job{Host,Src}` from flags+config and validates, then `deploy.Run` iterates the jobs. Precedence: `--ssh` > project `target` > root `target`; `-d` hosts > all map keys; positional dir > map entry. The fully-explicit `dir -d host --ssh …` form is unchanged (back-compat). `deploy.HostFromRemote` is the inverse of `RemoteDir` (folder path → host), used by `ls`.
 
+`deploy.rsyncArgs(o, src, dest, dryRun)` centralises the rsync flag mapping (mirror `--delete`, the `*./` subdomain-protection auto-exclude, user `--exclude`s, and — in dry-run — `--dry-run --itemize-changes`). Under `-n/--dry-run`, `Run` runs no remote `mkdir`, captures rsync's itemized output and feeds it through `ParseItemized`/`WriteSummary` (`internal/deploy/summary.go`, pure + table-tested) to print a per-host **added/replaced/deleted** summary before anything is touched — the nested subdomain guard means a mirror preview never lists a child site as a deletion. `--prune` is a `ParseArgs` alias for the default `--delete`.
+
 ## Architecture
 
 ### Discovery model

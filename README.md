@@ -275,7 +275,26 @@ zipgo deploy dist/ -d love-letters.game.gabvdl.xyz \
 
 `-d/--domain` is repeatable (deploy the same build to several hosts). Flags:
 `--ssh/--target user@host:/base/path`, `--exclude <pat>` (repeatable),
-`--no-delete` (don't mirror), `-n/--dry-run`.
+`--delete`/`--prune` (mirror — delete remote files missing from the source;
+this is the default, `--prune` is just a clearer name for it), `--no-delete`
+(keep them), `--include-subdomains` (let the mirror also delete nested
+trailing-dot subdomain folders; by default they're protected), `-n/--dry-run`.
+
+A `--dry-run` **previews exactly what would change and touches nothing** — it
+runs the same rsync with `--itemize-changes` and prints a per-host summary of
+which files would be added, replaced and deleted, so you can eyeball a mirror
+before it prunes the remote:
+
+```text
+🌐  app.dev.gabvdl.xyz
+   → user@host:/base/gabvdl.xyz/dev./app.
+   dry run — 2 added, 1 replaced, 1 deleted:
+     ＋ add      assets/app-9f3.js
+     ＋ add      favicon.ico
+     ~ replace  index.html
+     － delete   assets/app-old.js
+   (dry run — nothing was changed)
+```
 
 #### Config-driven deploy
 
