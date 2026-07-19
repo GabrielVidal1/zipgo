@@ -23,6 +23,8 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
+- Per-site deploy history + `zipgo rollback <host>` (`.zipgo-versions/`).
+
 
 ## Target
 
