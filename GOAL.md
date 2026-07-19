@@ -136,8 +136,15 @@ Ordered roughly by value. Each item is one session of work.
       `internal/builder`): the trailing-dot recursion, SPA detection,
       `enable:false`, and `rewrite` each get a table test. This is the safety net
       every later feature depends on.
-- [ ] `zipgo deploy --prune` / dry-run summary that prints exactly which remote
+- [x] `zipgo deploy --prune` / dry-run summary that prints exactly which remote
       files would be added, replaced and deleted before touching anything.
+      `-n/--dry-run` now runs the same rsync with `--itemize-changes`, captures
+      the output and prints a per-host summary bucketed into added/replaced/
+      deleted (nested trailing-dot subdomain folders stay protected, so a mirror
+      preview never lists a child site as a deletion), touching nothing.
+      `--prune` is a clearer spelling of the default `--delete` mirror. Parsing
+      lives in `internal/deploy/summary.go` (`ParseItemized`/`WriteSummary`,
+      pure and table-tested, plus a real-rsync e2e test).
 - [ ] Per-site deploy history: keep the last N deploys under a hidden
       `.zipgo-versions/` folder and add `zipgo rollback <host>` to swap the
       previous one back in.
