@@ -487,6 +487,9 @@ func proxyHandler(s sites.Site, stripPrefix string) obj {
 			"strip_path_prefix": stripPrefix,
 		}}})
 	}
+	if p := sites.NormalizeRewritePath(s.Config.RewritePath); p != "" {
+		routes = append(routes, rewritePathRoute(p, s.Config.RewritePathPassthroughs()))
+	}
 	rp := obj{
 		"handler":   "reverse_proxy",
 		"upstreams": arr{obj{"dial": dial}},
@@ -496,6 +499,35 @@ func proxyHandler(s sites.Site, stripPrefix string) obj {
 	}
 	routes = append(routes, obj{"handle": arr{rp}})
 	return obj{"handler": "subroute", "routes": routes}
+}
+
+// rewritePathRoute prepends the site's rewritePath to the upstream request path,
+// so a sub-path of an upstream ("/_/" — the PocketBase admin) is reachable at the
+// site's root while the browser URL stays on this host.
+//
+// The prepend is skipped for a request that already starts with the prefix, so a
+// client that does use the upstream's own path is passed through unchanged and
+// nothing is prefixed twice. That guard is what makes the key usable in practice:
+// the app served under the prefix typically still calls the upstream's *root*
+// paths (PocketBase's admin UI fetches /api/... absolutely), and those must reach
+// the upstream as-is rather than becoming /_/api/... — so only paths that the
+// upstream does not already own get moved under the prefix. Sites therefore pass
+// the upstream's root paths through via `rewritePathPassthrough`.
+func rewritePathRoute(prefix string, passthrough []string) obj {
+	// One "not" matcher holding every exempt path: Caddy ORs the path patterns
+	// inside a matcher set, and "not" negates the whole set, so the rewrite runs
+	// only when the request matches none of them.
+	skip := arr{prefix, prefix + "/*"}
+	for _, p := range passthrough {
+		skip = append(skip, p, p+"/*")
+	}
+	return obj{
+		"match": arr{obj{"not": arr{obj{"path": skip}}}},
+		"handle": arr{obj{
+			"handler": "rewrite",
+			"uri":     prefix + "{http.request.uri.path}{http.request.uri.query_string}",
+		}},
+	}
 }
 
 // proxyDial turns a rewrite value into a Caddy reverse_proxy dial address

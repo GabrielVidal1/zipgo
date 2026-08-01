@@ -100,18 +100,20 @@ func (r Report) OK(strict bool) bool {
 // silently ignored by the real parser, which makes a typo ("enabled" instead of
 // "enable") look like zipgo is broken — so doctor calls it out.
 var knownConfigKeys = map[string]bool{
-	"enable":         true,
-	"rewrite":        true,
-	"redirect":       true,
-	"redirectStatus": true,
-	"allowHttp":      true,
-	"basicAuth":      true,
-	"headers":        true,
+	"enable":                 true,
+	"rewrite":                true,
+	"rewritePath":            true,
+	"rewritePathPassthrough": true,
+	"redirect":               true,
+	"redirectStatus":         true,
+	"allowHttp":              true,
+	"basicAuth":              true,
+	"headers":                true,
 }
 
 // knownKeyList is the human list of keys printed as a hint next to an unknown
 // key, in a stable order.
-const knownKeyList = "enable, rewrite, redirect, redirectStatus, allowHttp, basicAuth, headers"
+const knownKeyList = "enable, rewrite, rewritePath, rewritePathPassthrough, redirect, redirectStatus, allowHttp, basicAuth, headers"
 
 // redirectStatuses are the status codes "redirectStatus" accepts: 301/308
 // permanent, 302/307 temporary.
@@ -329,10 +331,35 @@ func (r *Report) checkConfig(dir, host string) (sites.Config, bool) {
 		}
 	}
 
+	r.checkRewritePath(cfg, path, host)
 	r.checkRedirect(dir, path, host, cfg)
 	r.checkBasicAuth(cfg, path, host)
 
 	return cfg, cfg.Enabled()
+}
+
+// checkRewritePath reports a "rewritePath" (or its passthrough list) on a site
+// that has no "rewrite": the keys only mean something for a proxied site, so
+// there they are silently dead config rather than an error the parser catches.
+func (r *Report) checkRewritePath(cfg sites.Config, path, host string) {
+	if cfg.Rewrite != "" {
+		return
+	}
+	for _, k := range []struct {
+		name string
+		set  bool
+	}{
+		{"rewritePath", cfg.RewritePath != ""},
+		{"rewritePathPassthrough", len(cfg.RewritePathPassthrough) > 0},
+	} {
+		if k.set {
+			r.add(Finding{
+				Level: Warn, Host: host, Path: path,
+				Msg:  fmt.Sprintf("%q is ignored without \"rewrite\"", k.name),
+				Hint: "it prefixes the path sent to a proxied upstream; add \"rewrite\" or drop it",
+			})
+		}
+	}
 }
 
 // checkRedirect validates the "redirect"/"redirectStatus" pair: the target must

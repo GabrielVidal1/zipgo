@@ -33,6 +33,28 @@ type Config struct {
 	// address: a bare host:port (e.g. "localhost:8080") or a URL with scheme
 	// (e.g. "https://api.example.com").
 	Rewrite string `json:"rewrite,omitempty"`
+	// RewritePath, when non-empty, prefixes every proxied request path with this
+	// value before it reaches the Rewrite upstream, so a site can expose a
+	// sub-path of an upstream at its own root:
+	//
+	//	{"rewrite": "app-pocketbase:8090", "rewritePath": "/_/"}
+	//
+	// puts the PocketBase admin UI (served at /_/ upstream) at the site's root,
+	// with the browser's URL staying on this host instead of redirecting. It is
+	// only meaningful together with Rewrite; on a static or redirect site it is
+	// ignored (doctor warns). A value without a leading slash gets one.
+	RewritePath string `json:"rewritePath,omitempty"`
+	// RewritePathPassthrough lists path prefixes that must reach the upstream
+	// unprefixed even though RewritePath is set, because the upstream already
+	// serves them at its root. The app under the prefix usually still calls
+	// those (the PocketBase admin UI at /_/ fetches /api/... absolutely), so
+	// without this they would be rewritten to /_/api/... and 404:
+	//
+	//	{"rewritePath": "/_/", "rewritePathPassthrough": ["/api"]}
+	//
+	// Unset means DefaultRewritePathPassthrough, which covers that PocketBase
+	// case; set it explicitly (or to []) for a different upstream.
+	RewritePathPassthrough []string `json:"rewritePathPassthrough,omitempty"`
 	// Redirect, when non-empty, redirects every request for the site to another
 	// absolute URL instead of serving files from its folder. When the value is a
 	// bare origin ("https://elsewhere.com") the request's path and query are
@@ -160,6 +182,52 @@ type Site struct {
 	// Config is the per-site settings from .zipgoconfig.json (zero value when
 	// the file is absent).
 	Config Config
+}
+
+// DefaultRewritePathPassthrough are the path prefixes left unprefixed when a
+// site sets rewritePath without saying which paths the upstream owns at its
+// root. "/api" covers the overwhelmingly common case this key exists for — a
+// PocketBase admin UI mounted at the site root, whose JS calls /api/... — so the
+// key does the useful thing with one line of config.
+var DefaultRewritePathPassthrough = []string{"/api"}
+
+// NormalizeRewritePath cleans a rewritePath value into the form the builder
+// emits: empty stays empty, and anything else gets a leading slash and no
+// trailing one ("_/" → "/_"), so it concatenates with a request path exactly
+// once.
+func NormalizeRewritePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	for len(p) > 1 && strings.HasSuffix(p, "/") {
+		p = strings.TrimSuffix(p, "/")
+	}
+	if p == "/" {
+		return ""
+	}
+	return p
+}
+
+// RewritePathPassthroughs returns the path prefixes that must bypass the
+// rewritePath prepend, normalised the same way, falling back to
+// DefaultRewritePathPassthrough when the key is unset. An explicit empty list in
+// the file means "prefix everything" and is honoured.
+func (c Config) RewritePathPassthroughs() []string {
+	list := c.RewritePathPassthrough
+	if list == nil {
+		list = DefaultRewritePathPassthrough
+	}
+	out := make([]string, 0, len(list))
+	for _, p := range list {
+		if n := NormalizeRewritePath(p); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // HasNotFoundPage reports whether the site serves a custom 404 page: it has one

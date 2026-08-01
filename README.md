@@ -137,6 +137,12 @@ hides it). All keys are optional:
   "rewrite": "localhost:8080",     // reverse-proxy to this upstream instead of
                                    //   serving files (host:port, or a URL with
                                    //   scheme: "https://api.example.com")
+  "rewritePath": "/_/",            // prefix the proxied path, so a sub-path of
+                                   //   the upstream is served at this site's
+                                   //   root (needs "rewrite")
+  "rewritePathPassthrough": ["/api"], // paths the upstream owns at its root, so
+                                   //   they are NOT moved under "rewritePath"
+                                   //   (default ["/api"])
   "redirect": "https://elsewhere.example", // redirect every request to this URL
                                    //   instead of serving files
   "redirectStatus": 302,           // status used for "redirect" (default 302;
@@ -157,6 +163,28 @@ hides it). All keys are optional:
 - **`rewrite`** makes the site a reverse proxy: requests are forwarded to the
   given upstream rather than served from the folder (no `index.html` needed). A
   bare `host:port` dials plain HTTP; a `https://` URL proxies over TLS.
+- **`rewritePath`** prepends a path to every proxied request, so a sub-path of an
+  upstream is served at this site's root while the browser's URL stays on this
+  host (unlike a `redirect`, which bounces the address bar). The motivating case
+  is an admin UI that lives under a prefix — PocketBase serves its dashboard at
+  `/_/`, so:
+
+  ```jsonc
+  // domains/example.xyz/admin./.zipgoconfig.json
+  { "rewrite": "app-pocketbase:8090", "rewritePath": "/_/" }
+  ```
+
+  puts the dashboard on `https://admin.example.xyz/` instead of
+  `https://pb.example.xyz/_/`.
+
+  The prefix is **not** applied to a request that already starts with it, nor to
+  the paths in `rewritePathPassthrough` — the app under the prefix usually still
+  calls the upstream's *root* paths (PocketBase's dashboard fetches `/api/…`
+  absolutely), and prefixing those to `/_/api/…` would 404, so the dashboard
+  would load but never log in. The default passthrough is `["/api"]`, which
+  covers that case; set it explicitly for a different upstream, or to `[]` to
+  prefix everything. `rewritePath` needs `rewrite` — `doctor` warns when it is
+  set on a site that isn't a proxy.
 - **`redirect`** turns the host into a redirect (no `index.html` needed — this is
   the replacement for the `<meta http-equiv="refresh">` trick). The target must
   be an **absolute** `http(s)` URL:
@@ -408,6 +436,7 @@ a folder passed as an argument) and reports, per host:
 | Folder in the domains root with no dot — silently ignored by the server | warning |
 | Subdomain folder that forgot its trailing dot (`docs.example.com`) | warning |
 | A `rewrite` upstream zipgo cannot turn into a dial address | error |
+| `rewritePath`/`rewritePathPassthrough` set without `rewrite` — dead config | warning |
 | A `redirect` target that isn't an absolute `http(s)` URL (a path would loop) | error |
 | A `redirectStatus` that isn't 301/302/307/308 | error |
 | `redirect` and `rewrite` both set — the proxy upstream is never used | error |

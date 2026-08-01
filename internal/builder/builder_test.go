@@ -257,6 +257,56 @@ func TestProxyHandlerTLS(t *testing.T) {
 	}
 }
 
+// A rewritePath site prepends the prefix to the proxied path, and exempts both
+// the prefix itself and the upstream's own root paths so they are not moved
+// under it (a PocketBase admin at /_/ still calls /api/... at the root).
+func TestProxyHandlerRewritePath(t *testing.T) {
+	h := proxyHandler(sites.Site{Config: sites.Config{
+		Rewrite:     "pb:8090",
+		RewritePath: "/_/",
+	}}, "")
+	routes := h["routes"].(arr)
+	var rw obj
+	for _, r := range routes {
+		if handle, ok := r.(obj)["handle"].(arr); ok && len(handle) > 0 {
+			if handle[0].(obj)["handler"] == "rewrite" {
+				rw = r.(obj)
+			}
+		}
+	}
+	if rw == nil {
+		t.Fatal("no rewrite route emitted for rewritePath")
+	}
+	uri := rw["handle"].(arr)[0].(obj)["uri"]
+	want := "/_{http.request.uri.path}{http.request.uri.query_string}"
+	if uri != want {
+		t.Errorf("uri: want %q, got %v", want, uri)
+	}
+	// The trailing slash is normalised away, so the prefix is not doubled.
+	paths := rw["match"].(arr)[0].(obj)["not"].(arr)[0].(obj)["path"].(arr)
+	got := map[string]bool{}
+	for _, p := range paths {
+		got[p.(string)] = true
+	}
+	for _, want := range []string{"/_", "/_/*", "/api", "/api/*"} {
+		if !got[want] {
+			t.Errorf("exempt paths %v missing %q", paths, want)
+		}
+	}
+}
+
+// Without rewritePath a proxy site emits no rewrite route at all.
+func TestProxyHandlerNoRewritePath(t *testing.T) {
+	h := proxyHandler(sites.Site{Config: sites.Config{Rewrite: "pb:8090"}}, "")
+	for _, r := range h["routes"].(arr) {
+		if handle, ok := r.(obj)["handle"].(arr); ok && len(handle) > 0 {
+			if handle[0].(obj)["handler"] == "rewrite" {
+				t.Fatal("emitted a rewrite route without rewritePath")
+			}
+		}
+	}
+}
+
 func TestSecurityHeaders(t *testing.T) {
 	// Default (no authorized origins): clickjacking-safe X-Frame-Options, no CSP.
 	def := securityHeaders("", nil)["response"].(obj)["set"].(obj)
