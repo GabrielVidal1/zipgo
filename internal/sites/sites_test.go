@@ -267,3 +267,55 @@ func touch(t *testing.T, dir, name string) {
 		t.Fatal(err)
 	}
 }
+
+// NormalizeRewritePath produces a value that concatenates with a request path
+// exactly once: a leading slash, no trailing one, and "" for the no-op cases.
+func TestNormalizeRewritePath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"  ", ""},
+		{"/", ""},
+		{"///", ""},
+		{"/_/", "/_"},
+		{"_/", "/_"},
+		{"_", "/_"},
+		{"/_", "/_"},
+		{"/admin/ui/", "/admin/ui"},
+	}
+	for _, tc := range cases {
+		if got := NormalizeRewritePath(tc.in); got != tc.want {
+			t.Errorf("NormalizeRewritePath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The passthrough list defaults to /api (the PocketBase case) when unset, but an
+// explicit empty list means "prefix everything" and must not be overridden.
+func TestRewritePathPassthroughs(t *testing.T) {
+	if got := (Config{}).RewritePathPassthroughs(); len(got) != 1 || got[0] != "/api" {
+		t.Errorf("unset: want [/api], got %v", got)
+	}
+	if got := (Config{RewritePathPassthrough: []string{}}).RewritePathPassthroughs(); len(got) != 0 {
+		t.Errorf("explicit empty: want none, got %v", got)
+	}
+	got := Config{RewritePathPassthrough: []string{"api/", "/hooks"}}.RewritePathPassthroughs()
+	if len(got) != 2 || got[0] != "/api" || got[1] != "/hooks" {
+		t.Errorf("explicit list: want [/api /hooks], got %v", got)
+	}
+}
+
+// rewritePath round-trips through .zipgoconfig.json parsing.
+func TestReadConfigRewritePath(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, `{"rewrite": "pb:8090", "rewritePath": "/_/", "rewritePathPassthrough": ["/api"]}`)
+	c, err := readConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RewritePath != "/_/" {
+		t.Errorf("rewritePath: got %q", c.RewritePath)
+	}
+	if len(c.RewritePathPassthrough) != 1 || c.RewritePathPassthrough[0] != "/api" {
+		t.Errorf("passthrough: got %v", c.RewritePathPassthrough)
+	}
+}
