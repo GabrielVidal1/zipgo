@@ -148,6 +148,10 @@ Ordered roughly by value. Each item is one session of work.
 - [ ] Per-site deploy history: keep the last N deploys under a hidden
       `.zipgo-versions/` folder and add `zipgo rollback <host>` to swap the
       previous one back in.
+      Already implemented end-to-end (snapshot on deploy, `zipgo rollback
+      <host> [version]`, `--keep`/`--no-history`, table tests) on branch
+      `feat/deploy-history` (`01428d0`), sitting as open PR #1 — not merged
+      into `main`, so leave unchecked until it lands.
 - [ ] Landing-page refresh — the generated index at the apex when no site is
       deployed should use the same `sub-domains-meta` metadata the API already
       computes, so it stops being a separate code path.
