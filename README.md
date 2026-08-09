@@ -488,8 +488,40 @@ good config. `doctor` is the fastest way to find which file it is.
 | `ZIPGO_METRICS`         | _(off)_   | Set to any value to expose Prometheus metrics      |
 | `ZIPGO_METRICS_ADDR`    | `127.0.0.1:2019` | Address for the metrics endpoint (loopback by default) |
 | `ZIPGO_LOG_FORMAT`      | _(off)_   | Set to `json` for one JSON access-log line per request on stdout |
+| `ZIPGO_PROXY_PROTOCOL_ALLOW` | _(off)_ | Comma-separated CIDRs allowed to send a PROXY header (see below) |
 
 If the domains folder contains no valid domain folders, zipgo automatically falls back to localhost mode.
+
+### Behind a TCP proxy (PROXY protocol)
+
+When zipgo sits behind a proxy that forwards TCP without terminating TLS
+(Traefik with `tls.passthrough`, HAProxy in `mode tcp`), every request appears
+to come from the proxy — access logs show one address for the whole internet.
+
+Set `ZIPGO_PROXY_PROTOCOL_ALLOW` to the CIDRs the proxy dials from, and zipgo
+reads the real client address from the PROXY header it prepends:
+
+```bash
+ZIPGO_PROXY_PROTOCOL_ALLOW=172.18.0.0/16
+```
+
+```yaml
+# the Traefik side
+tcp:
+  services:
+    zipgo-tcp:
+      loadBalancer:
+        proxyProtocol:
+          version: 2
+        servers:
+          - address: "zipgo:443"
+```
+
+Unset (the default) the header is never honoured — accepting it from an
+arbitrary client would let that client choose its own source address, which
+defeats anything built on the client IP. Listed sources use go-proxyproto's
+`USE` policy, which reads the header when present and is otherwise a no-op, so
+you can enable this side first and switch the proxy over afterwards.
 
 ### Metrics
 
