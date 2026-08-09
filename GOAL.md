@@ -23,6 +23,9 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
+- [zipgo] Document the whole model in one page of `docs/` with the architecture
+  SVG: folder tree → hosts table → what Caddy gets. Replace the scattered README
+  sections with a link to it. — @2026-08-09T14:07:53Z
 
 ## Target
 
