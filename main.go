@@ -17,6 +17,7 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/caddyauth" // basicAuth: http.handlers.authentication + bcrypt
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/fileserver"
+	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/proxyprotocol" // ZIPGO_PROXY_PROTOCOL_ALLOW: caddy.listeners.proxy_protocol
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy"
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/rewrite"
 	_ "github.com/caddyserver/caddy/v2/modules/caddytls"

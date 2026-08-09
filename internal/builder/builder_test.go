@@ -629,3 +629,46 @@ func TestNotFoundPageUnderBasicAuth(t *testing.T) {
 		t.Error("the guarded file subroute should still serve the custom 404 page")
 	}
 }
+
+// The proxy_protocol wrapper is only added when ZIPGO_PROXY_PROTOCOL_ALLOW is
+// set, and it must be followed by an explicit "tls" wrapper: Caddy prepends a
+// TLS wrapper when none is named, which would decrypt the connection before
+// the PROXY header is read and break every request.
+func TestProxyProtocolWrappers(t *testing.T) {
+	servers := obj{"https": obj{"listen": arr{":443"}}, "metrics": obj{}}
+
+	withProxyProtocol(servers, nil)
+	if _, ok := servers["https"].(obj)["listener_wrappers"]; ok {
+		t.Fatal("unset allow-list: want no listener_wrappers")
+	}
+
+	withProxyProtocol(servers, []string{"172.18.0.0/16"})
+	w, ok := servers["https"].(obj)["listener_wrappers"].(arr)
+	if !ok || len(w) != 2 {
+		t.Fatalf("want 2 listener wrappers, got %v", servers["https"].(obj)["listener_wrappers"])
+	}
+	if got := w[0].(obj)["wrapper"]; got != "proxy_protocol" {
+		t.Errorf("first wrapper = %v, want proxy_protocol", got)
+	}
+	if got := w[1].(obj)["wrapper"]; got != "tls" {
+		t.Errorf("second wrapper = %v, want an explicit tls wrapper", got)
+	}
+	if got := w[0].(obj)["allow"].(arr); len(got) != 1 || got[0] != "172.18.0.0/16" {
+		t.Errorf("allow = %v, want the configured CIDR", got)
+	}
+	if _, ok := servers["metrics"].(obj)["listener_wrappers"]; ok {
+		t.Error("metrics server must not be wrapped")
+	}
+}
+
+func TestProxyProtocolAllowParsing(t *testing.T) {
+	t.Setenv("ZIPGO_PROXY_PROTOCOL_ALLOW", " 172.18.0.0/16 , 10.0.0.0/8 ")
+	got := ProxyProtocolAllow()
+	if len(got) != 2 || got[0] != "172.18.0.0/16" || got[1] != "10.0.0.0/8" {
+		t.Fatalf("got %v, want the two trimmed CIDRs", got)
+	}
+	t.Setenv("ZIPGO_PROXY_PROTOCOL_ALLOW", "")
+	if got := ProxyProtocolAllow(); got != nil {
+		t.Fatalf("unset: got %v, want nil", got)
+	}
+}
