@@ -23,10 +23,6 @@ site on a fresh VPS at `https://their.domain` in under two minutes, with one
 <!-- Claims by goal-keeper agents. One bullet per in-flight item; remove
      yours in the same commit that ticks its checkbox. -->
 
-- [zipgo] Document the whole model in one page of `docs/` with the architecture
-  SVG: folder tree → hosts table → what Caddy gets. Replace the scattered README
-  sections with a link to it. — @2026-08-09T14:07:53Z
-
 ## Target
 
 Who this is for, in priority order:
@@ -158,9 +154,21 @@ Ordered roughly by value. Each item is one session of work.
 - [ ] Landing-page refresh — the generated index at the apex when no site is
       deployed should use the same `sub-domains-meta` metadata the API already
       computes, so it stops being a separate code path.
-- [ ] Document the whole model in one page of `docs/` with the architecture SVG:
+- [x] Document the whole model in one page of `docs/` with the architecture SVG:
       folder tree → hosts table → what Caddy gets. Replace the scattered README
       sections with a link to it.
+      Shipped as `docs/model.md`: a worked `example.com` tree (apex, a
+      trailing-dot subdomain, a nested one, a `rewrite` and a `redirect`
+      `.zipgoconfig.json` site) resolved to a hosts table, the complete
+      `.zipgoconfig.json` key reference, and exactly what Caddy JSON each
+      handler type produces (TLS subjects, security headers, basicAuth wrap,
+      sub-domains-meta, the file-watcher reload loop). `docs/architecture.svg`
+      redrawn to match (the old one still showed the removed backoffice
+      proxy). README's Directory Layout/Subdomain rule/Site structure/
+      Per-site config/How It Works sections collapsed to short summaries
+      linking to it (546 → 386 lines). Verified against a real `zipgo doctor`
+      + `zipgo serve -ZIPGO_LOCALHOST=1` run on a scratch tree mirroring the
+      worked example — all four routes resolved exactly as documented.
 
 ## Non-goals (for now)
 

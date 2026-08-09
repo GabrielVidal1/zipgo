@@ -14,6 +14,9 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 
 ![zipgo architecture](./docs/architecture.svg)
 
+The full model behind this diagram — folder tree, hosts table, and what Caddy
+config each site produces — is [`docs/model.md`](./docs/model.md).
+
 ## Features
 
 - **Drop-in deploy** — create a domain folder under `.zipgo/`; changes are picked up automatically
@@ -74,7 +77,7 @@ make run
 
 ## Directory Layout
 
-The domains folder (default `.zipgo/`, override with `ZIPGO_DOMAINS_FOLDER`) holds one folder per domain. **A domain folder name must contain a dot** — folders without one are ignored.
+The domains folder (default `.zipgo/`, override with `ZIPGO_DOMAINS_FOLDER`) holds one folder per domain — a folder whose name has a dot is a domain, and inside it a folder ending in a dot is a subdomain, recursively:
 
 ```
 .zipgo/
@@ -87,176 +90,16 @@ The domains folder (default `.zipgo/`, override with `ZIPGO_DOMAINS_FOLDER`) hol
     └── blog./                 # → blog.yourdomain.com
 ```
 
-### Subdomain rule
+A `.zipgoconfig.json` dropped in any of those folders tweaks how that one site
+is served — reverse-proxy it (`rewrite`), redirect it, add response headers,
+put it behind basic auth, or turn it off — and a `404.html` next to its
+`index.html` becomes that site's 404 body. That's the entire per-site surface.
 
-Inside a domain folder, **any subdirectory whose name ends in a dot is a subdomain**. The label is the name with the trailing dot removed, and the rule applies recursively:
-
-| Folder                              | Host                          |
-| ----------------------------------- | ----------------------------- |
-| `yourdomain.com/` (the root itself) | `yourdomain.com`              |
-| `yourdomain.com/docs./`             | `docs.yourdomain.com`         |
-| `yourdomain.com/docs./api./`        | `api.docs.yourdomain.com`     |
-| `yourdomain.com/foo.bar./`          | `foo.bar.yourdomain.com`      |
-
-Folders that do **not** end in a dot are treated as ordinary content of their parent site (served as paths). Subdomain folders are hidden from the apex's directory listing, so they don't leak into `https://yourdomain.com/`.
-
-### Site structure
-
-The domain folder root is the apex site; each subdomain folder is its own site.
-
-```
-yourdomain.com/
-├── index.html         # entry point
-├── 404.html           # optional — the body of this site's 404s
-├── assets/            # presence of this (or static/, _next/, dist/) marks the site as an SPA
-└── ...
-```
-
-**SPA detection** — a site is treated as a single-page app when it contains `index.html` **and** one of the bundler output directories: `assets/`, `static/`, `_next/`, `dist/`. All unmatched paths are rewritten to `/index.html`.
-
-**Custom 404 page** — a static site with a `404.html` in its folder serves that
-file, instead of Caddy's plain-text 404, for any request that matches no file.
-Nothing to configure: the file being there *is* the config. The status stays
-**404** — only the body changes, so crawlers and `curl -f` still see a miss
-rather than a soft 404. It applies per site (a subdomain does not inherit its
-parent's page) and only to a static one: an SPA answers unknown paths with
-`index.html` and a 200, and `rewrite`/`redirect` sites never reach the file
-server — `zipgo doctor` warns when a `404.html` sits in one of those folders,
-where it would never be served.
-
-### Per-site config (`.zipgoconfig.json`)
-
-Drop a `.zipgoconfig.json` file in any domain/subdomain folder to tweak how that
-single site is served. The file is never served to clients (the file server
-hides it). All keys are optional:
-
-```jsonc
-{
-  "enable": true,                  // false → don't serve this site, and omit it
-                                   //         from any parent's sub-domains-meta
-  "rewrite": "localhost:8080",     // reverse-proxy to this upstream instead of
-                                   //   serving files (host:port, or a URL with
-                                   //   scheme: "https://api.example.com")
-  "rewritePath": "/_/",            // prefix the proxied path, so a sub-path of
-                                   //   the upstream is served at this site's
-                                   //   root (needs "rewrite")
-  "rewritePathPassthrough": ["/api"], // paths the upstream owns at its root, so
-                                   //   they are NOT moved under "rewritePath"
-                                   //   (default ["/api"])
-  "redirect": "https://elsewhere.example", // redirect every request to this URL
-                                   //   instead of serving files
-  "redirectStatus": 302,           // status used for "redirect" (default 302;
-                                   //   301/308 permanent, 302/307 temporary)
-  "allowHttp": false,              // true → also serve over plain HTTP (:80)
-                                   //        instead of redirecting to HTTPS
-  "headers": {                     // extra response headers, merged into the
-    "Cache-Control": "public, max-age=31536000, immutable"
-  },                               //   security headers zipgo already sends
-  "basicAuth": {                   // put the whole site behind a password
-    "alice": "$2a$14$Zkx19XLiW…"   //   username → *bcrypt hash*, never a
-  }                                //   plaintext password
-}
-```
-
-- **`enable: false`** removes the site entirely — no route, no TLS cert, and it
-  disappears from its parent's `/sub-domains-meta` listing.
-- **`rewrite`** makes the site a reverse proxy: requests are forwarded to the
-  given upstream rather than served from the folder (no `index.html` needed). A
-  bare `host:port` dials plain HTTP; a `https://` URL proxies over TLS.
-- **`rewritePath`** prepends a path to every proxied request, so a sub-path of an
-  upstream is served at this site's root while the browser's URL stays on this
-  host (unlike a `redirect`, which bounces the address bar). The motivating case
-  is an admin UI that lives under a prefix — PocketBase serves its dashboard at
-  `/_/`, so:
-
-  ```jsonc
-  // domains/example.xyz/admin./.zipgoconfig.json
-  { "rewrite": "app-pocketbase:8090", "rewritePath": "/_/" }
-  ```
-
-  puts the dashboard on `https://admin.example.xyz/` instead of
-  `https://pb.example.xyz/_/`.
-
-  The prefix is **not** applied to a request that already starts with it, nor to
-  the paths in `rewritePathPassthrough` — the app under the prefix usually still
-  calls the upstream's *root* paths (PocketBase's dashboard fetches `/api/…`
-  absolutely), and prefixing those to `/_/api/…` would 404, so the dashboard
-  would load but never log in. The default passthrough is `["/api"]`, which
-  covers that case; set it explicitly for a different upstream, or to `[]` to
-  prefix everything. `rewritePath` needs `rewrite` — `doctor` warns when it is
-  set on a site that isn't a proxy.
-- **`redirect`** turns the host into a redirect (no `index.html` needed — this is
-  the replacement for the `<meta http-equiv="refresh">` trick). The target must
-  be an **absolute** `http(s)` URL:
-  - a bare origin — `"https://elsewhere.example"` — **keeps the path and query**,
-    so deep links survive a domain move: `/blog/post?x=1` →
-    `https://elsewhere.example/blog/post?x=1`;
-  - a target with a path — `"https://elsewhere.example/moved"` — is used
-    verbatim: every request lands on that one URL.
-
-  A bare path (`"/new"`) is rejected: a redirect replaces the site's file server,
-  so it would redirect to itself forever. `redirect` also wins over `rewrite` —
-  `doctor` errors when both are set.
-- **`redirectStatus`** picks the status code — `301`/`308` (permanent) or
-  `302`/`307` (temporary). It defaults to **302**: browsers cache a 301 for a
-  long time, and in a folder-tree config a redirect should be as easy to undo as
-  the file that declared it. Set `301` once the move is final.
-- **`allowHttp: true`** serves the site on port 80 as well as 443 (by default
-  every host is 301-redirected to HTTPS). No effect in localhost mode, which is
-  already HTTP-only.
-- **`headers`** sets extra response headers on every request to the site —
-  caching, CORS, anything — without putting a proxy in front of it. They are
-  **merged into** the security headers zipgo already sends (`X-Frame-Options`,
-  `X-Content-Type-Options`, `Referrer-Policy`, `X-XSS-Protection`,
-  `Permissions-Policy`), not a replacement for them: an entry whose name matches
-  one of those defaults overrides that one header and leaves the rest alone.
-  Header names are case-insensitive (`cache-control` and `Cache-Control` are the
-  same header), and an **empty value removes** a header instead of sending it
-  blank:
-
-  ```jsonc
-  {
-    "headers": {
-      "Cache-Control": "public, max-age=31536000, immutable",  // add
-      "Access-Control-Allow-Origin": "https://app.example.com",// CORS, no proxy
-      "X-XSS-Protection": "1; mode=block",                     // override a default
-      "Referrer-Policy": ""                                    // remove a default
-    }
-  }
-  ```
-
-  A `headers` value that isn't an object of strings, a name that isn't a valid
-  header token, or a value containing a newline is a hard error — the same
-  contract as any malformed `.zipgoconfig.json` (see below). `zipgo doctor`
-  points at the file.
-
-  Headers apply to every kind of site: on a `rewrite` proxy they override
-  whatever the upstream sent, and on a `redirect` they ride along with the 301/302.
-- **`basicAuth`** puts the site behind HTTP basic auth — one file turns a
-  staging subdomain into a password-protected one. Keys are usernames, values
-  are **bcrypt hashes** (`caddy hash-password`, or `htpasswd -nbB alice s3cret`
-  and keep the `$2y$…` part). Plaintext passwords are never accepted: Caddy
-  compares against a hash, so a plaintext value locks *everyone* out — `doctor`
-  reports it as an error.
-
-  The check runs before anything is served, so it protects static files, SPA
-  routes, a `rewrite` upstream and the site's own `/sub-domains-meta` listing
-  alike. Child subdomains are **separate sites** and are not covered — give each
-  one its own `basicAuth` (they can share the same hash).
-
-```bash
-# retire old.example.com, keeping every deep link working
-mkdir -p .zipgo/example.com/old.
-echo '{"redirect": "https://new.example.com", "redirectStatus": 301}' \
-    > .zipgo/example.com/old./.zipgoconfig.json
-
-# password-protect staging.example.com
-mkdir -p .zipgo/example.com/staging.
-echo "{\"basicAuth\": {\"alice\": \"$(htpasswd -nbB alice s3cret | cut -d: -f2)\"}}" \
-    > .zipgo/example.com/staging./.zipgoconfig.json
-```
-
-Edits are picked up by the file watcher and hot-reloaded like any other change.
+**The whole model — the folder tree worked through to a hosts table, the
+complete `.zipgoconfig.json` reference, and exactly what Caddy config each
+kind of site produces — is documented in one page with the architecture
+diagram: [`docs/model.md`](./docs/model.md).** Read that before proposing a
+change here; this README stays a landing page.
 
 ---
 
@@ -530,13 +373,11 @@ server is excluded, so Prometheus scrapes don't flood the request stream.
 
 ## How It Works
 
-1. **Startup** — `main.go` reads `ZIPGO_DOMAINS_FOLDER` (default `.zipgo`) and lists its domain subfolders. No domains (or `ZIPGO_LOCALHOST=1`) → localhost mode.
-2. **Discovery** — `sites.Discover()` walks each domain folder: the root is the apex, and every dot-suffixed subfolder is a subdomain, recursively. SPAs are auto-detected.
-3. **Config build** — `builder` constructs a Caddy JSON config in memory:
-   - Domain mode: one HTTPS server, one route per host, HTTP→HTTPS redirect, Let's Encrypt TLS (exact host subjects).
-   - Localhost mode: a single listener on port `9000` with path routing, no TLS.
-4. **Caddy** is started (or reloaded) with the generated config — no Caddyfile on disk.
-5. **File watcher** — changes under the domains folder trigger a debounced `reload()`, re-running steps 2–4 with the updated site list.
+Startup reads the domains folder, discovers sites, builds an in-memory Caddy
+config from them, and a file watcher rebuilds it on every change — the exact
+mechanics (what each site's route looks like, TLS subjects, the file watcher's
+reload loop) are the "what Caddy gets" section of
+[`docs/model.md`](./docs/model.md).
 
 ---
 
