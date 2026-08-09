@@ -99,6 +99,61 @@ func accessLogging(servers obj, format string) obj {
 // given servers map and, when addr is non-empty, adds a dedicated server that
 // serves the Prometheus /metrics endpoint on addr. It is a no-op when addr is
 // empty. The metrics endpoint is a plain HTTP handler with no admin surface.
+// ProxyProtocolAllow returns the CIDR ranges allowed to speak the PROXY
+// protocol, from ZIPGO_PROXY_PROTOCOL_ALLOW (comma-separated). Unset means the
+// feature is off, which is the default: the header must never be accepted from
+// an arbitrary client, since it lets that client dictate its own source
+// address.
+//
+// It exists because zipgo is commonly reached through a TCP proxy that
+// terminates nothing (Traefik with tls.passthrough), which hides the visitor:
+// every request then appears to come from the proxy. The proxy re-attaches the
+// real address as a PROXY v2 header, and this lets Caddy read it.
+func ProxyProtocolAllow() []string {
+	raw := strings.TrimSpace(os.Getenv("ZIPGO_PROXY_PROTOCOL_ALLOW"))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, c := range strings.Split(raw, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// withProxyProtocol makes each server read a PROXY header from connections
+// coming from `allow`, so the request's client IP is the real visitor's.
+//
+// The explicit "tls" wrapper is load-bearing on the HTTPS server: when no tls
+// wrapper is named, Caddy *prepends* one, which would decrypt before the PROXY
+// header is read and break every connection. Naming it puts proxy_protocol on
+// the raw listener, where the header actually is.
+//
+// Sources in `allow` get go-proxyproto's USE policy, which reads the header
+// when present and is otherwise a no-op — so turning this on does not require
+// the proxy to be sending headers yet, and the two sides can be rolled out
+// one at a time.
+func withProxyProtocol(servers obj, allow []string) {
+	if len(allow) == 0 {
+		return
+	}
+	ranges := arr{}
+	for _, c := range allow {
+		ranges = append(ranges, c)
+	}
+	for name, s := range servers {
+		if name == "metrics" {
+			continue // loopback scrapes, never proxied
+		}
+		s.(obj)["listener_wrappers"] = arr{
+			obj{"wrapper": "proxy_protocol", "allow": ranges},
+			obj{"wrapper": "tls"},
+		}
+	}
+}
+
 func withMetrics(servers obj, addr string) {
 	if addr == "" {
 		return
@@ -316,6 +371,8 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 			"routes": httpRoutes,
 		},
 	}
+	// Domain mode only: in localhost mode nothing sits in front of zipgo.
+	withProxyProtocol(servers, ProxyProtocolAllow())
 	withMetrics(servers, metricsAddr)
 
 	cfg := obj{
