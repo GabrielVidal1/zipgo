@@ -212,12 +212,12 @@ func served(s sites.Site) bool {
 }
 
 // Gone reports whether a site answers 410 Gone instead: it is switched off and
-// was live — it has content, or it is the very folder whose config says
-// "enable": false (the site someone turned off answers for itself even when it
-// is only a holder of subdomains). A content-less folder that is merely under a
-// disabled parent stays unrouted, as it was while on.
+// has something to serve, i.e. it was live. A folder with nothing of its own
+// (one that only holds subdomains) stays unrouted when off, as it was while on —
+// routing it would put a host that never had a certificate into the TLS
+// subjects and send Caddy off to request one just to say "gone".
 func Gone(s sites.Site) bool {
-	return s.Off() && (hasContent(s) || !s.Config.Enabled())
+	return s.Off() && hasContent(s)
 }
 
 // GoneBody is the page a disabled site answers every request with, under a 410

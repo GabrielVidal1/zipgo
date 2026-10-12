@@ -164,7 +164,7 @@ func TestSwitchOffAndOn(t *testing.T) {
 	if want := "{\n  \"enable\": false,\n  \"headers\": {\n    \"X-A\": \"1\"\n  }\n}\n"; cfg != want {
 		t.Errorf("config after off:\n%s\nwant\n%s", cfg, want)
 	}
-	if got := out.String(); !strings.Contains(got, "app.example.com is now off") ||
+	if got := out.String(); !strings.Contains(got, "app.example.com is now off — it serves nothing itself") ||
 		!strings.Contains(got, "1 nested site with it: pb.app.example.com") {
 		t.Errorf("off output:\n%s", got)
 	}
@@ -202,12 +202,20 @@ func TestSwitchOffAndOn(t *testing.T) {
 		t.Errorf("on output:\n%s", out.String())
 	}
 
-	// A site with no config of its own gets none back after off + on.
+	// A site with a page of its own answers 410; with no config of its own, it
+	// gets none back after off + on.
 	blog := filepath.Join(base, "example.com", "blog.")
+	if err := os.WriteFile(filepath.Join(blog, "index.html"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
 	for _, on := range []bool{false, true} {
 		if err := Switch(&out, tgt, SwitchOptions{Hosts: []string{"blog.example.com"}}, on); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if !strings.Contains(out.String(), "blog.example.com is now off — it answers 410 Gone") {
+		t.Errorf("off output for a site with a page:\n%s", out.String())
 	}
 	if _, ok := readConfigFile(t, blog); ok {
 		t.Error("off + on should leave no config behind")
