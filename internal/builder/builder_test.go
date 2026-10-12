@@ -1,6 +1,9 @@
 package builder
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -670,5 +673,214 @@ func TestProxyProtocolAllowParsing(t *testing.T) {
 	t.Setenv("ZIPGO_PROXY_PROTOCOL_ALLOW", "")
 	if got := ProxyProtocolAllow(); got != nil {
 		t.Fatalf("unset: got %v, want nil", got)
+	}
+}
+
+func TestServedAndGoneWhenOff(t *testing.T) {
+	fls := false
+	withIndex := t.TempDir()
+	if err := os.WriteFile(filepath.Join(withIndex, "index.html"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	holder := t.TempDir() // nothing to serve: only holds subdomains
+
+	cases := []struct {
+		name         string
+		site         sites.Site
+		served, gone bool
+	}{
+		{"live site", sites.Site{Path: withIndex}, true, false},
+		{"turned off itself", sites.Site{Path: withIndex, Config: sites.Config{Enable: &fls}}, false, true},
+		{"off through a parent", sites.Site{Path: withIndex, Disabled: true}, false, true},
+		{"proxy off through a parent", sites.Site{Path: holder, Disabled: true, Config: sites.Config{Rewrite: "app:8080"}}, false, true},
+		// The folder someone turned off answers 410 even with nothing of its own…
+		{"empty holder turned off", sites.Site{Path: holder, Config: sites.Config{Enable: &fls}}, false, true},
+		// …but an empty holder merely under it stays unrouted, as it was while on.
+		{"empty holder under a parent", sites.Site{Path: holder, Disabled: true}, false, false},
+	}
+	for _, c := range cases {
+		if got := served(c.site); got != c.served {
+			t.Errorf("%s: served = %v, want %v", c.name, got, c.served)
+		}
+		if got := Gone(c.site); got != c.gone {
+			t.Errorf("%s: Gone = %v, want %v", c.name, got, c.gone)
+		}
+	}
+}
+
+func TestGoneHandler(t *testing.T) {
+	routes := goneHandler()["routes"].(arr)
+	set := routes[0].(obj)["handle"].(arr)[0].(obj)["response"].(obj)["set"].(obj)
+	if got := set["Cache-Control"]; !reflect.DeepEqual(got, arr{"no-store"}) {
+		t.Errorf("Cache-Control = %v, want no-store (a 410 must not outlive `zipgo on`)", got)
+	}
+	if _, ok := set["X-Frame-Options"]; !ok {
+		t.Error("the 410 page should still carry the default security headers")
+	}
+	sr := routes[1].(obj)["handle"].(arr)[0].(obj)
+	if sr["handler"] != "static_response" || sr["status_code"] != "410" {
+		t.Fatalf("want a static 410, got %v", sr)
+	}
+	if sr["body"] != GoneBody {
+		t.Error("the 410 response should carry the GoneBody page")
+	}
+}
+
+// discovered builds a domain tree on disk and runs the real discovery over it,
+// so the cascade comes from sites.Discover rather than hand-set flags.
+func discovered(t *testing.T, domain string, index []string, configs map[string]string) DomainSites {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), domain)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range index {
+		dir := filepath.Join(root, d)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<title>x</title>"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for d, body := range configs {
+		if err := os.WriteFile(filepath.Join(root, d, sites.ConfigFileName), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	found, err := sites.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return DomainSites{Domain: domain, Sites: found}
+}
+
+// configJSON round-trips a built config into plain maps for inspection.
+func configJSON(t *testing.T, app []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(app, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// statusByHost maps each host-matched route of a server to the status of its
+// first static_response, or "" when it serves something else (files, proxy).
+func statusByHost(routes []any) map[string]string {
+	out := map[string]string{}
+	for _, r := range routes {
+		ro := r.(map[string]any)
+		match, ok := ro["match"].([]any)
+		if !ok {
+			continue
+		}
+		m := match[0].(map[string]any)
+		hosts, ok := m["host"].([]any)
+		if !ok || m["path"] != nil {
+			continue // a sub-domains-meta route: host + path
+		}
+		out[hosts[0].(string)] = firstStatus(ro["handle"])
+	}
+	return out
+}
+
+func firstStatus(v any) string {
+	switch x := v.(type) {
+	case []any:
+		for _, e := range x {
+			if s := firstStatus(e); s != "" {
+				return s
+			}
+		}
+	case map[string]any:
+		if x["handler"] == "static_response" {
+			s, _ := x["status_code"].(string)
+			return s
+		}
+		for _, k := range []string{"handle", "routes"} {
+			if s := firstStatus(x[k]); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func TestBuildConfigDisabledSitesAnswer410(t *testing.T) {
+	ds := discovered(t, "example.com",
+		[]string{".", "app.", "app./pb.", "blog."},
+		map[string]string{"app.": `{"enable": false}`})
+	cfg, err := BuildConfig([]DomainSites{ds}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := configJSON(t, cfg.AppsRaw["http"])
+	https := app["servers"].(map[string]any)["https"].(map[string]any)
+	got := statusByHost(https["routes"].([]any))
+	want := map[string]string{
+		"example.com":        "",    // live
+		"blog.example.com":   "",    // live sibling
+		"app.example.com":    "410", // turned off
+		"pb.app.example.com": "410", // off with its parent
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("routes by host = %v, want %v", got, want)
+	}
+
+	// Disabled hosts keep their certificate, so the 410 is reachable over HTTPS.
+	tls := configJSON(t, cfg.AppsRaw["tls"])
+	policy := tls["automation"].(map[string]any)["policies"].([]any)[0].(map[string]any)
+	subjects := map[string]bool{}
+	for _, s := range policy["subjects"].([]any) {
+		subjects[s.(string)] = true
+	}
+	for _, h := range []string{"app.example.com", "pb.app.example.com", "blog.example.com"} {
+		if !subjects[h] {
+			t.Errorf("TLS subjects should still include %s, got %v", h, policy["subjects"])
+		}
+	}
+}
+
+func TestBuildConfigDisabledChildLeavesMeta(t *testing.T) {
+	ds := discovered(t, "example.com",
+		[]string{".", "app.", "blog."},
+		map[string]string{"app.": `{"enable": false}`})
+	for _, s := range ds.Sites {
+		if s.IsApex() {
+			cm := childMeta(s, ds.Sites)
+			if _, ok := cm["app."]; ok {
+				t.Error("a disabled child must not be listed in sub-domains-meta")
+			}
+			if _, ok := cm["blog."]; !ok {
+				t.Error("a live child should still be listed in sub-domains-meta")
+			}
+		}
+	}
+}
+
+func TestBuildLocalhostConfigDisabledSitesAnswer410(t *testing.T) {
+	ds := discovered(t, "example.com",
+		[]string{".", "app.", "app./pb."},
+		map[string]string{"app.": `{"enable": false}`})
+	cfg, err := BuildLocalhostConfig([]DomainSites{ds}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := configJSON(t, cfg.AppsRaw["http"])
+	routes := app["servers"].(map[string]any)["sites"].(map[string]any)["routes"].([]any)
+	got := map[string]string{}
+	for _, r := range routes {
+		ro := r.(map[string]any)
+		paths := ro["match"].([]any)[0].(map[string]any)["path"].([]any)
+		got[paths[0].(string)] = firstStatus(ro["handle"])
+	}
+	want := map[string]string{
+		"/example.com":        "",
+		"/example.com/app":    "410",
+		"/example.com/app/pb": "410",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("routes by path = %v, want %v", got, want)
 	}
 }

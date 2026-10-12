@@ -65,7 +65,8 @@ type Report struct {
 	// Findings, ordered by the folder they were found in.
 	Findings []Finding
 	// Sites is the number of enabled sites that were checked, Disabled the
-	// number skipped because of "enable": false.
+	// number skipped because they are switched off — "enable": false on the site
+	// itself or on a parent, which takes its nested subdomains down with it.
 	Sites    int
 	Disabled int
 	Domains  int
@@ -164,7 +165,7 @@ func Check(domainsDir string) (Report, error) {
 			continue
 		}
 		rep.Domains++
-		rep.walk(filepath.Join(domainsDir, name), name, nil, hosts)
+		rep.walk(filepath.Join(domainsDir, name), name, nil, hosts, "")
 	}
 
 	// Duplicate hosts: two different folders that would both answer for one host.
@@ -192,15 +193,30 @@ func Check(domainsDir string) (Report, error) {
 func (r *Report) add(f Finding) { r.Findings = append(r.Findings, f) }
 
 // walk checks one site folder and recurses into its trailing-dot subdomains,
-// mirroring sites.Discover's traversal but without ever bailing out.
-func (r *Report) walk(dir, domain string, labels []string, hosts map[string][]string) {
+// mirroring sites.Discover's traversal but without ever bailing out. offBy is the
+// host of the parent site that switches this subtree off ("" when none does), so
+// the cascade is counted the way the server applies it.
+func (r *Report) walk(dir, domain string, labels []string, hosts map[string][]string, offBy string) {
 	site := sites.Site{Labels: labels, Path: dir}
 	host := site.Host(domain)
 	hosts[host] = append(hosts[host], dir)
 
 	cfg, enabled := r.checkConfig(dir, host)
 
-	if !enabled {
+	if offBy != "" && cfg.Enable != nil && *cfg.Enable {
+		// The one place an explicit true looks meaningful and isn't: a parent's
+		// "enable": false switches off its whole subtree.
+		r.add(Finding{
+			Level: Warn, Host: host, Path: filepath.Join(dir, sites.ConfigFileName),
+			Msg:  fmt.Sprintf("\"enable\": true has no effect: %s is switched off, and so is every site nested under it", offBy),
+			Hint: fmt.Sprintf("run `zipgo on %s` (or drop its \"enable\": false) to bring this site back", offBy),
+		})
+	}
+	if offBy == "" && !enabled {
+		offBy = host
+	}
+
+	if offBy != "" {
 		r.Disabled++
 	} else {
 		r.Sites++
@@ -249,7 +265,7 @@ func (r *Report) walk(dir, domain string, labels []string, hosts map[string][]st
 			})
 			continue
 		}
-		r.walk(filepath.Join(dir, name), domain, append([]string{label}, labels...), hosts)
+		r.walk(filepath.Join(dir, name), domain, append([]string{label}, labels...), hosts, offBy)
 	}
 }
 
@@ -543,8 +559,9 @@ func (r *Report) checkContent(dir, host string, cfg sites.Config) {
 	level, hint := Error, "add an index.html, or set \"rewrite\" (proxy) or \"redirect\" in "+sites.ConfigFileName
 	if hasSubdomainChild(dir) {
 		level = Warn
-		hint = "this folder only holds subdomains; set \"enable\": false in " +
-			sites.ConfigFileName + " if the host itself should not be served"
+		// Not "enable": false — that would switch off every subdomain under it.
+		hint = "this folder only holds subdomains, which is fine if the host itself " +
+			"needs no page; add an index.html to give it one"
 	}
 	r.add(Finding{
 		Level: level, Host: host, Path: dir,

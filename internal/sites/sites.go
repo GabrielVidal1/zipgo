@@ -24,9 +24,11 @@ const NotFoundFileName = "404.html"
 // Pointer fields distinguish "unset" (nil → use the default) from an explicit
 // true/false in the file.
 type Config struct {
-	// Enable, when explicitly false, removes the site entirely: it is not
-	// served and is excluded from any parent's sub-domains-meta listing.
-	// Unset/true means the site is served as normal.
+	// Enable, when explicitly false, switches the site off: every request gets
+	// a 410 Gone page instead of its content, it is excluded from any parent's
+	// sub-domains-meta listing, and the same goes for its whole subtree of nested
+	// subdomains (see Site.Disabled). Unset/true means the site is served as
+	// normal — an explicit true cannot revive a site under a disabled parent.
 	Enable *bool `json:"enable,omitempty"`
 	// Rewrite, when non-empty, reverse-proxies the site to another upstream
 	// instead of serving files from its folder. The value is an upstream
@@ -93,7 +95,8 @@ type Config struct {
 // as deleting a file — the routing shouldn't outlive the file.
 const DefaultRedirectStatus = 302
 
-// Enabled reports whether the site should be served (default true).
+// Enabled reports whether the site's own config leaves it on (default true).
+// Whether it is actually served also depends on its parents: see Site.Disabled.
 func (c Config) Enabled() bool { return c.Enable == nil || *c.Enable }
 
 // RedirectCode returns the status code to use for the site's redirect,
@@ -182,6 +185,11 @@ type Site struct {
 	// Config is the per-site settings from .zipgoconfig.json (zero value when
 	// the file is absent).
 	Config Config
+	// Disabled is true when the site is switched off: its own config sets
+	// "enable": false, or a parent site's does. Disabling a site takes every
+	// nested subdomain under it down too, so `pb.app.example.com` goes off with
+	// `app.example.com` — a project and its backends are one switch.
+	Disabled bool
 }
 
 // DefaultRewritePathPassthrough are the path prefixes left unprefixed when a
@@ -239,6 +247,11 @@ func (s Site) HasNotFoundPage() bool {
 		s.Config.Rewrite == "" && s.Config.Redirect == ""
 }
 
+// Off reports whether the site is switched off — by its own "enable": false or,
+// through Disabled, by a parent's. Callers should use this rather than either
+// field alone.
+func (s Site) Off() bool { return s.Disabled || !s.Config.Enabled() }
+
 // IsApex reports whether this site is served at the bare domain.
 func (s Site) IsApex() bool { return len(s.Labels) == 0 }
 
@@ -273,18 +286,20 @@ func Discover(domainDir string) ([]Site, error) {
 	}
 
 	var result []Site
-	var walk func(dir string, labels []string) error
-	walk = func(dir string, labels []string) error {
+	var walk func(dir string, labels []string, parentOff bool) error
+	walk = func(dir string, labels []string, parentOff bool) error {
 		cfg, err := readConfig(dir)
 		if err != nil {
 			return err
 		}
+		off := parentOff || !cfg.Enabled()
 		result = append(result, Site{
 			Labels:       append([]string{}, labels...),
 			Path:         dir,
 			IsSPA:        DetectSPA(dir),
 			NotFoundPage: DetectNotFound(dir),
 			Config:       cfg,
+			Disabled:     off,
 		})
 
 		entries, err := os.ReadDir(dir)
@@ -303,14 +318,14 @@ func Discover(domainDir string) ([]Site, error) {
 				continue
 			}
 			child := filepath.Join(dir, e.Name())
-			if err := walk(child, append([]string{label}, labels...)); err != nil {
+			if err := walk(child, append([]string{label}, labels...), off); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
-	if err := walk(domainDir, nil); err != nil {
+	if err := walk(domainDir, nil, false); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -327,12 +342,23 @@ func readConfig(dir string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("reading %s: %w", filepath.Join(dir, ConfigFileName), err)
 	}
-	var c Config
-	if err := json.Unmarshal(data, &c); err != nil {
+	c, err := ParseConfig(data)
+	if err != nil {
 		return Config{}, fmt.Errorf("parsing %s: %w", filepath.Join(dir, ConfigFileName), err)
 	}
+	return c, nil
+}
+
+// ParseConfig decodes a .zipgoconfig.json body exactly as the server reads it,
+// so a tool that edits the file remotely (`zipgo off`/`on`) can refuse one the
+// server would reject instead of rewriting it.
+func ParseConfig(data []byte) (Config, error) {
+	var c Config
+	if err := json.Unmarshal(data, &c); err != nil {
+		return Config{}, err
+	}
 	if err := ValidateHeaders(c.Headers); err != nil {
-		return Config{}, fmt.Errorf("parsing %s: %w", filepath.Join(dir, ConfigFileName), err)
+		return Config{}, err
 	}
 	return c, nil
 }
