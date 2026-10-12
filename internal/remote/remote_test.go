@@ -3,6 +3,7 @@ package remote
 import (
 	"encoding/base64"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -179,5 +180,38 @@ func TestParseSitesProtected(t *testing.T) {
 	}
 	if strings.Contains(string(blob), hash) {
 		t.Errorf("JSON record leaks the password hash: %s", blob)
+	}
+}
+
+func TestParseSwitchesCascade(t *testing.T) {
+	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	found := []hostDir{
+		{"example.com", "/d/example.com"},
+		{"app.example.com", "/d/example.com/app."},
+		{"pb.app.example.com", "/d/example.com/app./pb."},
+		{"x.pb.app.example.com", "/d/example.com/app./pb./x."},
+		{"blog.example.com", "/d/example.com/blog."},
+		{"broken.example.com", "/d/example.com/broken."},
+	}
+	out := "/d/example.com\t\n" +
+		"/d/example.com/app.\t" + b64(`{"enable": false}`) + "\n" +
+		"/d/example.com/app./pb.\t" + b64(`{"enable": false}`) + "\n" +
+		"/d/example.com/app./pb./x.\t\n" +
+		"/d/example.com/blog.\t" + b64(`{"enable": true}`) + "\n" +
+		"/d/example.com/broken.\t" + b64(`{oops`) + "\n"
+	got := map[string]string{}
+	for _, s := range parseSwitches(found, out) {
+		got[s.Host] = offNote(s)
+	}
+	want := map[string]string{
+		"example.com":          "",
+		"app.example.com":      "  ⏸ off",
+		"pb.app.example.com":   "  ⏸ off",                            // off on its own too
+		"x.pb.app.example.com": "  ⏸ off through pb.app.example.com", // nearest parent
+		"blog.example.com":     "",
+		"broken.example.com":   "", // unreadable config: reported by info, not guessed at
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v\nwant %v", got, want)
 	}
 }
