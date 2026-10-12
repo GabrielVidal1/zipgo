@@ -3,6 +3,7 @@ package sites
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -353,5 +354,75 @@ func TestReadConfigRewritePath(t *testing.T) {
 	}
 	if len(c.RewritePathPassthrough) != 1 || c.RewritePathPassthrough[0] != "/api" {
 		t.Errorf("passthrough: got %v", c.RewritePathPassthrough)
+	}
+}
+
+func TestPasswordDays(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{
+		{0, DefaultSessionDays}, {-3, DefaultSessionDays}, {1, 1}, {30, 30},
+		{MaxSessionDays, MaxSessionDays}, {MaxSessionDays + 1, MaxSessionDays},
+	} {
+		if got := (Password{SessionDays: tc.in}).Days(); got != tc.want {
+			t.Errorf("Days(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestProtected(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		cfg                   Config
+		password, basic, prot bool
+	}{
+		{"public", Config{}, false, false, false},
+		{"password", Config{Password: &Password{Hash: "h"}}, true, false, true},
+		// The block alone locks the site, even without a usable hash.
+		{"empty password block", Config{Password: &Password{}}, true, false, true},
+		{"basicAuth", Config{BasicAuth: map[string]string{"a": "h"}}, false, true, true},
+		{"empty basicAuth", Config{BasicAuth: map[string]string{}}, false, false, false},
+	} {
+		c := tc.cfg
+		if c.HasPassword() != tc.password || c.HasBasicAuth() != tc.basic || c.Protected() != tc.prot {
+			t.Errorf("%s: password=%v basic=%v protected=%v", tc.name, c.HasPassword(), c.HasBasicAuth(), c.Protected())
+		}
+	}
+}
+
+func TestReadConfigPassword(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, `{"password": {"hash": "$2a$12$abc", "title": "Ballance", "sessionDays": 14}}`)
+	c, err := readConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Password == nil || c.Password.Hash != "$2a$12$abc" || c.Password.Title != "Ballance" || c.Password.Days() != 14 {
+		t.Fatalf("password = %+v", c.Password)
+	}
+}
+
+func TestLocks(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    []string
+		wantErr bool
+	}{
+		{"absent", "", nil, false},
+		{"no lock", `{"headers": {"A": "1"}}`, nil, false},
+		{"password", `{"password": {"hash": "h"}}`, []string{"password"}, false},
+		{"both", `{"basicAuth": {"a": "h"}, "password": {"hash": "h"}}`, []string{"password", "basicAuth"}, false},
+		{"null is no lock", `{"password": null}`, nil, false},
+		{"malformed", `{"password": `, nil, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, names, err := Locks([]byte(tc.raw))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if strings.Join(names, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("locks = %v, want %v", names, tc.want)
+			}
+		})
 	}
 }

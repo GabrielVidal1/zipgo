@@ -233,7 +233,7 @@ func TestSiteHandlerRedirectWins(t *testing.T) {
 	h, err := siteHandler(sites.Site{
 		Path:   t.TempDir(),
 		Config: sites.Config{Redirect: "https://elsewhere.example", Rewrite: "localhost:8080"},
-	}, "")
+	}, "example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestSiteHandlerBasicAuth(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			h, err := siteHandler(tc.site, "")
+			h, err := siteHandler(tc.site, "example.com", "")
 			if err != nil {
 				t.Fatalf("siteHandler: %v", err)
 			}
@@ -414,12 +414,12 @@ func TestSiteHandlerBasicAuth(t *testing.T) {
 func TestGuardMetaRoute(t *testing.T) {
 	route := obj{"handle": arr{obj{"handler": "static_response"}}}
 
-	public := guard(obj{"handle": arr{obj{"handler": "static_response"}}}, sites.Site{})
+	public := guard(obj{"handle": arr{obj{"handler": "static_response"}}}, sites.Site{}, "example.com", "")
 	if h := public["handle"].(arr); len(h) != 1 {
 		t.Fatalf("public meta route: want 1 handler, got %d", len(h))
 	}
 
-	protected := guard(route, sites.Site{Config: protectedConfig()})
+	protected := guard(route, sites.Site{Config: protectedConfig()}, "example.com", "")
 	h := protected["handle"].(arr)
 	if len(h) != 2 {
 		t.Fatalf("protected meta route: want 2 handlers, got %d", len(h))
@@ -512,7 +512,7 @@ func notFoundRoutes(h obj) arr {
 // status still 404, and only for 404s.
 func TestNotFoundPageServed(t *testing.T) {
 	root := t.TempDir()
-	h, err := siteHandler(sites.Site{Path: root, NotFoundPage: "404.html"}, "")
+	h, err := siteHandler(sites.Site{Path: root, NotFoundPage: "404.html"}, "example.com", "")
 	if err != nil {
 		t.Fatalf("siteHandler: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestNotFoundPageServed(t *testing.T) {
 
 // The page is served under the name it actually has on disk.
 func TestNotFoundPageUsesNameOnDisk(t *testing.T) {
-	h, err := siteHandler(sites.Site{Path: t.TempDir(), NotFoundPage: "404.HTML"}, "")
+	h, err := siteHandler(sites.Site{Path: t.TempDir(), NotFoundPage: "404.HTML"}, "example.com", "")
 	if err != nil {
 		t.Fatalf("siteHandler: %v", err)
 	}
@@ -581,7 +581,7 @@ func TestNoNotFoundRouteWhenPageCannotBeServed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.site.Path = t.TempDir()
-			h, err := siteHandler(tc.site, "")
+			h, err := siteHandler(tc.site, "example.com", "")
 			if err != nil {
 				t.Fatalf("siteHandler: %v", err)
 			}
@@ -596,7 +596,7 @@ func TestNoNotFoundRouteWhenPageCannotBeServed(t *testing.T) {
 // still resolved against the site's own root — the rewrite is not prefixed.
 func TestNotFoundPageLocalhostMode(t *testing.T) {
 	root := t.TempDir()
-	h, err := siteHandler(sites.Site{Path: root, NotFoundPage: "404.html"}, "/example.com")
+	h, err := siteHandler(sites.Site{Path: root, NotFoundPage: "404.html"}, "example.com", "/example.com")
 	if err != nil {
 		t.Fatalf("siteHandler: %v", err)
 	}
@@ -614,7 +614,7 @@ func TestNotFoundPageLocalhostMode(t *testing.T) {
 // unauthenticated caller.
 func TestNotFoundPageUnderBasicAuth(t *testing.T) {
 	site := sites.Site{Path: t.TempDir(), NotFoundPage: "404.html", Config: protectedConfig()}
-	h, err := siteHandler(site, "")
+	h, err := siteHandler(site, "example.com", "")
 	if err != nil {
 		t.Fatalf("siteHandler: %v", err)
 	}

@@ -76,6 +76,14 @@ type Config struct {
 	// It applies to static, SPA and rewrite (proxy) sites alike, and to the
 	// site's own sub-domains-meta endpoint.
 	BasicAuth map[string]string `json:"basicAuth,omitempty"`
+	// Password, when present, puts the whole site behind zipgo's own login
+	// page: one shared password, a signed session cookie, nothing served
+	// before it. Unlike BasicAuth it has a real page (the browser's basic-auth
+	// dialog can't be styled, saved by every password manager, or logged out
+	// of), and it is what `zipgo password set` manages. The block alone locks
+	// the site: a missing or unusable hash means nobody gets in, never that
+	// the site is public.
+	Password *Password `json:"password,omitempty"`
 	// Headers are extra response headers merged into the security-headers
 	// handler zipgo already applies to every route (file and proxy alike), so a
 	// site can set caching or CORS without a proxy in front:
@@ -108,8 +116,81 @@ func (c Config) RedirectCode() int {
 	return c.RedirectStatus
 }
 
-// Protected reports whether the site is behind HTTP basic auth.
-func (c Config) Protected() bool { return len(c.BasicAuth) > 0 }
+// Password is the "password" block of a .zipgoconfig.json:
+//
+//	{"password": {"hash": "$2a$12$…", "title": "Ballance", "sessionDays": 7}}
+type Password struct {
+	// Hash is the bcrypt hash of the shared password, never the password.
+	Hash string `json:"hash"`
+	// Title is the heading of the login page (the only thing that differs
+	// from one protected site to the next). Empty means the site's host.
+	Title string `json:"title,omitempty"`
+	// SessionDays is how long a login lasts without a visit. A session is
+	// renewed while in use, so a visitor who comes back within this many days
+	// stays logged in. Zero means DefaultSessionDays.
+	SessionDays int `json:"sessionDays,omitempty"`
+}
+
+// DefaultSessionDays is how long a login lasts when "sessionDays" is unset. The
+// session is renewed while it is in use, so this is really "how long a visitor
+// can stay away before having to log in again".
+const DefaultSessionDays = 7
+
+// MaxSessionDays is the longest session a site can ask for. Browsers cap a
+// cookie's lifetime at 400 days (Chrome since 2022), so anything longer would
+// silently be cut there.
+const MaxSessionDays = 400
+
+// Days returns the session lifetime in days, defaulting and clamping
+// "sessionDays" to [1, MaxSessionDays].
+func (p Password) Days() int {
+	switch {
+	case p.SessionDays <= 0:
+		return DefaultSessionDays
+	case p.SessionDays > MaxSessionDays:
+		return MaxSessionDays
+	}
+	return p.SessionDays
+}
+
+// HasPassword reports whether the site is behind zipgo's login page.
+func (c Config) HasPassword() bool { return c.Password != nil }
+
+// HasBasicAuth reports whether the site is behind HTTP basic auth.
+func (c Config) HasBasicAuth() bool { return len(c.BasicAuth) > 0 }
+
+// Protected reports whether the site is locked at all — a login page, HTTP
+// basic auth, or both. A protected site is never listed in its parent's
+// sub-domains-meta, and a deploy never removes its lock.
+func (c Config) Protected() bool { return c.HasPassword() || c.HasBasicAuth() }
+
+// LockKeys are the .zipgoconfig.json keys that lock a site. They are server
+// state, set with `zipgo password` (or by hand on the server), not part of a
+// build: `zipgo deploy` carries them over instead of letting a pushed build —
+// with no config, or with a config of its own — unlock the site.
+var LockKeys = []string{"password", "basicAuth"}
+
+// Locks returns the lock keys present in a raw .zipgoconfig.json, in LockKeys
+// order. An empty or absent file has none; a malformed one is an error, since
+// the caller can't tell whether it locks the site.
+func Locks(raw []byte) (map[string]json.RawMessage, []string, error) {
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return nil, nil, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, nil, fmt.Errorf("parsing %s: %w", ConfigFileName, err)
+	}
+	locks := map[string]json.RawMessage{}
+	var names []string
+	for _, k := range LockKeys {
+		if v, ok := m[k]; ok && string(v) != "null" {
+			locks[k] = v
+			names = append(names, k)
+		}
+	}
+	return locks, names, nil
+}
 
 // HTTPAllowed reports whether the site opts into being served over plain HTTP
 // (default false).
