@@ -227,6 +227,9 @@ func main() {
 	case "password":
 		runPassword(os.Args[2:])
 		return
+	case "admin":
+		runAdmin(os.Args[2:])
+		return
 	case "version", "--version", "-v":
 		fmt.Println("zipgo", version)
 		return
@@ -242,6 +245,7 @@ func main() {
 		fmt.Println("  on       switch a site that is off back on")
 		fmt.Println("  doctor   check the local domains folder for broken sites")
 		fmt.Println("  password put a site behind a login page, rotate or remove its password")
+		fmt.Println("  admin    set up a domain's back-office: a page to switch its sites off/on")
 		fmt.Println("  version  print the version")
 		fmt.Println("  enable   Install and start the systemd user service")
 		fmt.Println("  disable  Stop and remove the systemd user service")
@@ -256,6 +260,8 @@ func main() {
 		fmt.Print(doctorUsage)
 		fmt.Println()
 		fmt.Print(password.Usage)
+		fmt.Println()
+		fmt.Print(password.AdminUsage)
 		return
 	case "serve", "":
 		// fall through to server startup
@@ -405,30 +411,7 @@ func runPassword(args []string) {
 		return
 	}
 
-	var store password.Store
-	var tgt deploy.Target
-	if opts.Dir != "" {
-		store = password.Local{Base: opts.Dir}
-	} else {
-		proj, root := loadConfigs()
-		spec := opts.SSH
-		if spec == "" {
-			spec = proj.Target
-		}
-		if spec == "" {
-			spec = root.Target
-		}
-		if named, ok := root.Targets[spec]; ok {
-			spec = named
-		}
-		if spec == "" {
-			log.Fatalf("❌  no target: pass --ssh user@host:/base (or --dir <domains folder>), or add a target to .zipgo.json\n")
-		}
-		if tgt, err = deploy.ParseTarget(spec); err != nil {
-			log.Fatalf("❌  %v\n", err)
-		}
-		store = password.Remote{Target: tgt}
-	}
+	store, tgt := passwordStore(opts)
 
 	if opts.Verb == "status" {
 		var list []password.Status
@@ -456,6 +439,47 @@ func runPassword(args []string) {
 	}
 }
 
+// runAdmin runs `zipgo admin …`, against the same target as zipgo password.
+func runAdmin(args []string) {
+	opts, err := password.ParseAdminArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, password.AdminUsage)
+		os.Exit(2)
+	}
+	store, _ := passwordStore(opts)
+	if err := password.RunAdmin(opts, store, os.Stdin, os.Stdout); err != nil {
+		log.Fatalf("❌  %v\n", err)
+	}
+}
+
+// passwordStore is where `zipgo password` and `zipgo admin` read and write a
+// site's config: --dir, else --ssh, else the project's package.json "zipgo"
+// target, else .zipgo.json.
+func passwordStore(opts password.Options) (password.Store, deploy.Target) {
+	if opts.Dir != "" {
+		return password.Local{Base: opts.Dir}, deploy.Target{}
+	}
+	proj, root := loadConfigs()
+	spec := opts.SSH
+	if spec == "" {
+		spec = proj.Target
+	}
+	if spec == "" {
+		spec = root.Target
+	}
+	if named, ok := root.Targets[spec]; ok {
+		spec = named
+	}
+	if spec == "" {
+		log.Fatalf("❌  no target: pass --ssh user@host:/base (or --dir <domains folder>), or add a target to .zipgo.json\n")
+	}
+	tgt, err := deploy.ParseTarget(spec)
+	if err != nil {
+		log.Fatalf("❌  %v\n", err)
+	}
+	return password.Remote{Target: tgt}, tgt
+}
+
 // siteKind is the padded label printed next to a site in the startup listing,
 // mirroring how the builder routes it: a switched-off site answers 410 whatever
 // it holds, then a redirect target wins over a rewrite upstream, which wins over
@@ -464,6 +488,8 @@ func siteKind(s sites.Site) string {
 	switch {
 	case s.Off():
 		return "off   "
+	case s.Config.Admin:
+		return "admin "
 	case s.Config.Redirect != "":
 		return "redir "
 	case s.Config.Rewrite != "":

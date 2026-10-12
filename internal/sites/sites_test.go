@@ -426,3 +426,27 @@ func TestLocks(t *testing.T) {
 		})
 	}
 }
+
+// A back-office ("admin": true) is not switched off by its parent: it is how
+// the parent gets switched back on. Its own "enable": false still applies.
+func TestDiscoverAdminIgnoresTheCascade(t *testing.T) {
+	domain := filepath.Join(t.TempDir(), "example.com")
+	for _, d := range []string{"admin.", "app.", "spare."} {
+		if err := os.MkdirAll(filepath.Join(domain, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, domain, `{"enable": false}`)
+	write(t, filepath.Join(domain, "admin."), `{"admin": true}`)
+	write(t, filepath.Join(domain, "spare."), `{"admin": true, "enable": false}`)
+	found, err := Discover(domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"example.com": true, "admin.example.com": false, "app.example.com": true, "spare.example.com": true}
+	for _, s := range found {
+		if host := s.Host("example.com"); s.Off() != want[host] {
+			t.Errorf("%s: Off() = %v, want %v", host, s.Off(), want[host])
+		}
+	}
+}

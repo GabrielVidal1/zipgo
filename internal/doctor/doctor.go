@@ -111,6 +111,7 @@ var knownConfigKeys = map[string]bool{
 	"basicAuth":              true,
 	"password":               true,
 	"headers":                true,
+	"admin":                  true,
 }
 
 // knownPasswordKeys are the keys of the "password" block.
@@ -118,7 +119,7 @@ var knownPasswordKeys = map[string]bool{"hash": true, "title": true, "sessionDay
 
 // knownKeyList is the human list of keys printed as a hint next to an unknown
 // key, in a stable order.
-const knownKeyList = "enable, rewrite, rewritePath, rewritePathPassthrough, redirect, redirectStatus, allowHttp, basicAuth, password, headers"
+const knownKeyList = "enable, rewrite, rewritePath, rewritePathPassthrough, redirect, redirectStatus, allowHttp, basicAuth, password, headers, admin"
 
 // redirectStatuses are the status codes "redirectStatus" accepts: 301/308
 // permanent, 302/307 temporary.
@@ -206,6 +207,11 @@ func (r *Report) walk(dir, domain string, labels []string, hosts map[string][]st
 	hosts[host] = append(hosts[host], dir)
 
 	cfg, enabled := r.checkConfig(dir, host)
+	if cfg.Admin {
+		// A back-office stays up when its parent is off (sites.Discover).
+		r.checkAdmin(dir, host, len(labels) == 0, cfg)
+		offBy = ""
+	}
 
 	if offBy != "" && cfg.Enable != nil && *cfg.Enable {
 		// The one place an explicit true looks meaningful and isn't: a parent's
@@ -359,6 +365,45 @@ func (r *Report) checkConfig(dir, host string) (sites.Config, bool) {
 	}
 
 	return cfg, cfg.Enabled()
+}
+
+// checkAdmin checks a back-office folder ("admin": true): it must have a
+// password (without one the server refuses to serve it), must not be the apex
+// (it manages the site it is nested in), and serves nothing else — files,
+// a rewrite or a redirect next to it are dead weight.
+func (r *Report) checkAdmin(dir, host string, apex bool, cfg sites.Config) {
+	path := filepath.Join(dir, sites.ConfigFileName)
+	if !cfg.HasPassword() {
+		r.add(Finding{
+			Level: Error, Host: host, Path: path,
+			Msg:  "a back-office without a password stays closed (403)",
+			Hint: "set one with `zipgo admin set " + host + "`",
+		})
+	}
+	if apex {
+		r.add(Finding{
+			Level: Error, Host: host, Path: path,
+			Msg:  "the apex can't be a back-office: it manages the site its folder is nested in",
+			Hint: "put it in a subdomain folder of its own, e.g. `zipgo admin set admin." + host + "`",
+		})
+	}
+	var dead []string
+	if cfg.Rewrite != "" {
+		dead = append(dead, "\"rewrite\"")
+	}
+	if cfg.Redirect != "" {
+		dead = append(dead, "\"redirect\"")
+	}
+	if hasIndex(dir) {
+		dead = append(dead, "index.html")
+	}
+	if len(dead) > 0 {
+		r.add(Finding{
+			Level: Warn, Host: host, Path: dir,
+			Msg:  strings.Join(dead, " and ") + " ignored: this folder serves the back-office",
+			Hint: "give the back-office a folder of its own",
+		})
+	}
 }
 
 // checkRewritePath reports a "rewritePath" (or its passthrough list) on a site
@@ -612,7 +657,7 @@ func (r *Report) checkHeaders(rawHeaders json.RawMessage, host, path string) {
 
 // checkContent verifies an enabled site has something to serve.
 func (r *Report) checkContent(dir, host string, cfg sites.Config) {
-	if cfg.Rewrite != "" || cfg.Redirect != "" {
+	if cfg.Admin || cfg.Rewrite != "" || cfg.Redirect != "" {
 		// A proxied or redirected site serves nothing from disk, so index.html
 		// is irrelevant.
 		return

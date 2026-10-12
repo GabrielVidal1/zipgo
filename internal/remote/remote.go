@@ -28,8 +28,9 @@ type Site struct {
 	URL  string `json:"url"`
 	Path string `json:"path"`
 	// Type is "static", "spa" (index.html + a bundle folder), "proxy"
-	// (.zipgoconfig.json rewrite) or "redirect" (.zipgoconfig.json redirect),
-	// mirroring how the server routes the site.
+	// (.zipgoconfig.json rewrite), "redirect" (.zipgoconfig.json redirect) or
+	// "admin" (a back-office, .zipgoconfig.json admin), mirroring how the
+	// server routes the site.
 	Type string `json:"type"`
 	// Proxy is the rewrite upstream; set only when Type is "proxy".
 	Proxy string `json:"proxy,omitempty"`
@@ -64,6 +65,7 @@ type Site struct {
 	ConfigError string `json:"configError,omitempty"`
 
 	ownOff bool // its own config says "enable": false (cascade input)
+	admin  bool // a back-office: a parent's switch doesn't reach it
 }
 
 // Entry is one file or folder inside a site, emitted by `zipgo ls <host> --json`.
@@ -80,6 +82,7 @@ const (
 	typeSPA      = "spa"
 	typeProxy    = "proxy"
 	typeRedirect = "redirect"
+	typeAdmin    = "admin"
 )
 
 // bundleDirs are the folders that, next to an index.html, mark a site as an SPA.
@@ -204,6 +207,11 @@ func parseSites(want []hostDir, out string) []Site {
 				s.Redirect = cfg.Redirect
 				s.RedirectStatus = cfg.RedirectCode()
 			}
+			// And the back-office replaces everything.
+			if cfg.Admin {
+				s.Type = typeAdmin
+				s.admin = true
+			}
 		}
 		byDir[f[0]] = s
 	}
@@ -224,10 +232,11 @@ func parseSites(want []hostDir, out string) []Site {
 // cascade applies the parent → nested switch the server applies: a site under a
 // parent that is off by its own config is off too, through the nearest such
 // parent. Folder nesting (not host suffixes) decides who is a parent, as in
-// sites.Discover.
+// sites.Discover — and, as there, a back-office is never switched off by a
+// parent.
 func cascade(list []Site) {
 	for i := range list {
-		if list[i].ownOff {
+		if list[i].ownOff || list[i].admin {
 			continue
 		}
 		by, depth := "", -1
@@ -276,6 +285,7 @@ func parseSwitches(found []hostDir, out string) []Site {
 		if cfg, err := decodeConfig(cfgs[hd.dir]); err == nil {
 			list[i].Enabled = cfg.Enabled()
 			list[i].ownOff = !cfg.Enabled()
+			list[i].admin = cfg.Admin
 		}
 	}
 	cascade(list)

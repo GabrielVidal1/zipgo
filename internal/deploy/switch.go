@@ -456,7 +456,8 @@ func switchOne(w io.Writer, tgt Target, host string, on, dryRun bool) error {
 func liveNested(st siteState) []string {
 	var hosts []string
 	for _, n := range st.Nested {
-		if !offBelow(st, n) {
+		// A back-office isn't taken down by its parent (sites.Discover).
+		if !offBelow(st, n) && !n.Own.Admin {
 			hosts = append(hosts, n.Host)
 		}
 	}
