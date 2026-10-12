@@ -197,10 +197,11 @@ func hasIndex(s sites.Site) bool {
 }
 
 // hasContent reports whether a site has something to serve — an index.html
-// (file mode), a rewrite upstream (reverse-proxy mode) or a redirect target. A
-// folder without any of those only exists to hold subdomains.
+// (file mode), a rewrite upstream (reverse-proxy mode), a redirect target or
+// the back-office (admin). A folder without any of those only exists to hold
+// subdomains.
 func hasContent(s sites.Site) bool {
-	return s.Config.Redirect != "" || s.Config.Rewrite != "" || hasIndex(s)
+	return s.Config.Admin || s.Config.Redirect != "" || s.Config.Rewrite != "" || hasIndex(s)
 }
 
 // served reports whether a site gets its normal route: it is not switched off
@@ -307,7 +308,7 @@ func childMeta(parent sites.Site, all []sites.Site) map[string]meta.Meta {
 		if !labelsEqual(c.Labels[1:], parent.Labels) {
 			continue
 		}
-		if c.Off() || !hasIndex(c) || c.Config.Protected() {
+		if c.Off() || !hasIndex(c) || c.Config.Protected() || c.Config.Admin {
 			continue
 		}
 		m, err := meta.Extract(filepath.Join(c.Path, "index.html"))
@@ -499,7 +500,7 @@ func domainRoute(s sites.Site, host string) (obj, error) {
 // the check runs before anything is served — files, SPA fallback and proxied
 // upstreams alike.
 func siteHandler(s sites.Site, host, stripPrefix string) (obj, error) {
-	inner, err := unguardedSiteHandler(s, stripPrefix)
+	inner, err := unguardedSiteHandler(s, host, stripPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -584,8 +585,12 @@ func siteHeaders(c sites.Config) map[string]string {
 }
 
 // unguardedSiteHandler picks what the site serves, before any auth check is
-// layered on top: a redirect, a proxied upstream, or its own files.
-func unguardedSiteHandler(s sites.Site, stripPrefix string) (obj, error) {
+// layered on top: the back-office, a redirect, a proxied upstream, or its own
+// files.
+func unguardedSiteHandler(s sites.Site, host, stripPrefix string) (obj, error) {
+	if s.Config.Admin {
+		return adminHandler(s, host, stripPrefix)
+	}
 	if s.Config.Redirect != "" {
 		return redirectHandler(s, stripPrefix), nil
 	}

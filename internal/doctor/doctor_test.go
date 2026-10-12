@@ -675,3 +675,52 @@ func TestCheckPassword(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckAdmin(t *testing.T) {
+	admin := func(body string, extra map[string]string) map[string]string {
+		files := map[string]string{
+			"example.com/index.html":               "<html></html>",
+			"example.com/admin./.zipgoconfig.json": body,
+		}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	locked := `{"admin": true, "password": {"hash": "` + testHash + `"}}`
+	tests := []struct {
+		name      string
+		files     map[string]string
+		wantMsg   string // "" = no findings
+		wantLevel Level
+	}{
+		{name: "a locked back-office is clean", files: admin(locked, nil)},
+		{name: "no password", files: admin(`{"admin": true}`, nil),
+			wantMsg: "without a password stays closed", wantLevel: Error},
+		{name: "on the apex", files: map[string]string{
+			"example.com/.zipgoconfig.json": locked}, wantMsg: "the apex can't be a back-office", wantLevel: Error},
+		{name: "files next to it", files: admin(locked, map[string]string{"example.com/admin./index.html": "x"}),
+			wantMsg: "index.html ignored", wantLevel: Warn},
+		{name: "stays checked under an off parent", files: admin(`{"admin": true}`, map[string]string{
+			"example.com/.zipgoconfig.json": `{"enable": false}`}),
+			wantMsg: "without a password stays closed", wantLevel: Error},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rep, err := Check(tree(t, tc.files))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantMsg == "" {
+				if len(rep.Findings) != 0 {
+					t.Fatalf("want no findings, got %+v", rep.Findings)
+				}
+				return
+			}
+			f, ok := find(rep, tc.wantMsg)
+			if !ok || f.Level != tc.wantLevel {
+				t.Fatalf("want %v %q, got %+v", tc.wantLevel, tc.wantMsg, rep.Findings)
+			}
+		})
+	}
+}

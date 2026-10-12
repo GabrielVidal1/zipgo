@@ -1,0 +1,10 @@
+{
+  "name": "zipgo admin",
+  "short_name": "zipgo",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f4f2",
+  "theme_color": "#2f6f4f",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

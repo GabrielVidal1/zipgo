@@ -744,6 +744,9 @@ func discovered(t *testing.T, domain string, index []string, configs map[string]
 		}
 	}
 	for d, body := range configs {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(root, d, sites.ConfigFileName), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}

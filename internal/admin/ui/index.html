@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#f4f4f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121311" media="(prefers-color-scheme: dark)">
+<title>zipgo admin</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <div class="logo" aria-hidden="true">z</div>
+    <h1 class="dom" id="domain">…</h1>
+    <a class="ghost" href="__zipgo/logout">Log out</a>
+  </div>
+  <p class="sum" id="summary" aria-live="polite"></p>
+  <div class="tools">
+    <input class="search" id="search" type="search" placeholder="Filter hosts…" aria-label="Filter hosts" autocomplete="off" autocapitalize="none" spellcheck="false">
+    <div class="seg" role="group" aria-label="View">
+      <button type="button" data-view="tree" aria-pressed="true">Tree</button>
+      <button type="button" data-view="list" aria-pressed="false">List</button>
+    </div>
+  </div>
+  <div class="chips" id="chips" role="group" aria-label="Show"></div>
+</header>
+
+<main class="list" id="list" aria-busy="true"></main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"><span></span><button type="button">Undo</button></div>
+
+<dialog class="sheet" id="sheet" aria-labelledby="sheet-title">
+  <form method="dialog" class="sheet-head">
+    <div>
+      <h2 id="sheet-title"></h2>
+      <a id="sheet-link" target="_blank" rel="noopener noreferrer"></a>
+    </div>
+    <button class="ghost" value="close" aria-label="Close">✕</button>
+  </form>
+  <dl class="facts" id="sheet-facts"></dl>
+  <section class="lock" id="sheet-lock">
+    <h3>Password</h3>
+    <p class="muted" id="lock-state"></p>
+    <form id="lock-form" class="lock-form" autocomplete="off">
+      <input id="lock-input" type="password" placeholder="New password" aria-label="New password" minlength="8" autocomplete="new-password">
+      <button type="submit" class="primary" id="lock-save">Set</button>
+    </form>
+    <div class="row-btns">
+      <button type="button" id="lock-generate">Generate one</button>
+      <button type="button" class="danger" id="lock-remove">Remove password</button>
+    </div>
+    <div class="generated" id="generated" hidden>
+      <p class="muted">New password, shown once:</p>
+      <code id="generated-value"></code>
+      <button type="button" id="generated-copy">Copy</button>
+    </div>
+  </section>
+</dialog>
+</body>
+</html>

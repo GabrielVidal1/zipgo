@@ -95,6 +95,18 @@ type Config struct {
 	// overrides it; every other default is left alone. An empty value removes
 	// the header instead of sending it blank.
 	Headers map[string]string `json:"headers,omitempty"`
+	// Admin, when true, turns the folder into the back-office of the site it
+	// is nested in: a page listing that site and every subdomain under it,
+	// with an on/off switch each (the same "enable" key `zipgo off` writes).
+	// Put it in a folder of its own at the domain root —
+	//
+	//	gabvdl.xyz/zipgo./.zipgoconfig.json  {"admin": true, "password": {…}}
+	//
+	// — and https://zipgo.gabvdl.xyz manages the whole domain. It needs a
+	// "password" (`zipgo admin set` writes both): without one the page is
+	// never served. An admin site is not switched off by a parent, so turning
+	// the domain off doesn't take its switchboard with it.
+	Admin bool `json:"admin,omitempty"`
 }
 
 // DefaultRedirectStatus is the status code used for a "redirect" site that does
@@ -373,7 +385,9 @@ func Discover(domainDir string) ([]Site, error) {
 		if err != nil {
 			return err
 		}
-		off := parentOff || !cfg.Enabled()
+		// An admin site ignores its parents' switch: it is how they get
+		// switched back on.
+		off := (parentOff && !cfg.Admin) || !cfg.Enabled()
 		result = append(result, Site{
 			Labels:       append([]string{}, labels...),
 			Path:         dir,
