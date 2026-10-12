@@ -605,3 +605,73 @@ func TestCheckDisabledCascades(t *testing.T) {
 		t.Errorf("unexpected finding: %+v", f)
 	}
 }
+
+func TestCheckPassword(t *testing.T) {
+	cfg := func(body string) map[string]string {
+		return map[string]string{
+			"example.com/index.html":                  "<html></html>",
+			"example.com/ballance./index.html":        "<html></html>",
+			"example.com/ballance./.zipgoconfig.json": body,
+		}
+	}
+	tests := []struct {
+		name      string
+		files     map[string]string
+		wantMsg   string // "" = no findings
+		wantLevel Level
+	}{
+		{name: "a hashed password is clean",
+			files: cfg(`{"password": {"hash": "` + testHash + `", "title": "Ballance", "sessionDays": 7}}`)},
+		{name: "a plaintext password locks everyone out",
+			files:   cfg(`{"password": {"hash": "ilikeballance"}}`),
+			wantMsg: "nobody can log in", wantLevel: Error},
+		{name: "a block without a hash locks everyone out",
+			files:   cfg(`{"password": {"title": "Ballance"}}`),
+			wantMsg: "nobody can log in", wantLevel: Error},
+		{name: "a misspelt key inside the block",
+			files:   cfg(`{"password": {"hash": "` + testHash + `", "titel": "Ballance"}}`),
+			wantMsg: `unknown key "titel" in "password"`, wantLevel: Warn},
+		{name: "not an object",
+			files:   cfg(`{"password": "ilikeballance"}`),
+			wantMsg: `"password" must be an object`, wantLevel: Error},
+		{name: "sessionDays beyond what browsers keep",
+			files:   cfg(`{"password": {"hash": "` + testHash + `", "sessionDays": 1000}}`),
+			wantMsg: "out of range", wantLevel: Warn},
+		{name: "two locks",
+			files:   cfg(`{"password": {"hash": "` + testHash + `"}, "basicAuth": {"gate": "` + testHash + `"}}`),
+			wantMsg: "both set", wantLevel: Warn},
+		{name: "allowHttp is ignored",
+			files:   cfg(`{"password": {"hash": "` + testHash + `"}, "allowHttp": true}`),
+			wantMsg: "HTTPS only", wantLevel: Warn},
+		{name: "locked before the first deploy",
+			files: map[string]string{
+				"example.com/index.html":                  "<html></html>",
+				"example.com/ballance./.zipgoconfig.json": `{"password": {"hash": "` + testHash + `"}}`,
+			},
+			wantMsg: "no index.html", wantLevel: Error},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rep, err := Check(tree(t, tc.files))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantMsg == "" {
+				if len(rep.Findings) != 0 {
+					t.Fatalf("want no findings, got %+v", rep.Findings)
+				}
+				return
+			}
+			f, ok := find(rep, tc.wantMsg)
+			if !ok {
+				t.Fatalf("no finding containing %q; got %+v", tc.wantMsg, rep.Findings)
+			}
+			if f.Level != tc.wantLevel {
+				t.Errorf("level = %v, want %v (%s)", f.Level, tc.wantLevel, f.Msg)
+			}
+			if f.Host != "ballance.example.com" {
+				t.Errorf("host = %q", f.Host)
+			}
+		})
+	}
+}
