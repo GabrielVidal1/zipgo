@@ -144,6 +144,14 @@ Ordered roughly by value. Each item is one session of work.
       `http.log.access.access`); the loopback metrics server is left out so
       Prometheus scrapes don't flood the stream. Off by default (Caddy errors
       only). Needed the `caddy/modules/logging` import for the JSON encoder.
+- [x] A per-domain back-office to switch sites off/on from a phone
+      (`zipgo admin set admin.<domain>`): a page behind zipgo's login page
+      listing the domain's every sub and sub-sub site as a tree or a list,
+      with an on/off switch (Undo toast), search and filters, last deploy and
+      size, and each site's password (set / generate / remove). It writes
+      `enable` and `password` exactly as `zipgo off`/`zipgo password` do —
+      no state of its own — fails closed without a password, and survives its
+      parent being switched off. Shipped in `internal/admin`.
 - [ ] Unit tests for the discovery + builder core (`internal/sites`,
       `internal/builder`): the trailing-dot recursion, SPA detection,
       `enable:false`, and `rewrite` each get a table test. This is the safety net
@@ -185,9 +193,13 @@ Ordered roughly by value. Each item is one session of work.
 
 - **Dynamic backends.** zipgo serves files and proxies to an upstream. It will
   never grow serverless functions, a database, or a build step.
-- **A web UI / control panel.** The backoffice was removed on purpose. The CLI
-  and the filesystem are the interface; a dashboard would be a second source of
-  truth about what's deployed.
+- **A web UI that owns state.** The old upload backoffice was removed on purpose:
+  the CLI and the filesystem are the interface. The one page that came back —
+  the per-domain back-office (`"admin": true`) — is a *face for the files*: it
+  reads the tree on every request and writes the same `.zipgoconfig.json` keys
+  the CLI writes (`enable`, `password`). Anything that would give it state of
+  its own (a database, an upload/deploy path, settings only it knows) stays
+  out.
 - **A config file at the root.** `.zipgo.json` holds *deploy targets* (client
   side), never routing. Routing lives in the tree, per-site tweaks live in a
   per-site `.zipgoconfig.json`. Anything that would reintroduce a global

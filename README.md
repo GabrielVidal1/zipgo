@@ -25,6 +25,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **Custom 404 page** — drop a `404.html` in a static site's folder and it becomes the body of its 404s
 - **Password-protected sites** — `zipgo password set <host>` puts a whole site behind a login page (one shared password, a session cookie); deploys keep the lock. `"basicAuth"` is there too for HTTP basic auth
 - **Switch a site off** — `zipgo off <host>` takes a deployed site down (410 Gone, nested subdomains included) without deleting it; `zipgo on <host>` brings it back
+- **Back-office** — `zipgo admin set admin.yourdomain.com` gives a domain a password-protected page, made for a phone, to switch any of its sites (sub and sub-sub domains included) off and on and to put a password on one. It edits the same `.zipgoconfig.json` files the CLI does — no state of its own
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
 - **Systemd integration** — `zipgo enable` sets up a user service that starts on boot
 
@@ -154,6 +155,9 @@ hides it). All keys are optional:
   "headers": {                     // extra response headers, merged into the
     "Cache-Control": "public, max-age=31536000, immutable"
   },                               //   security headers zipgo already sends
+  "admin": false,                  // true → this folder is the back-office of
+                                   //   the site it is nested in (needs a
+                                   //   "password"; `zipgo admin set` writes both)
   "password": {                    // a login page in front of the whole site
     "hash": "$2a$12$Zkx19XLiW…",   //   *bcrypt hash* of the shared password
     "title": "Ballance",           //   the login page's heading (default: host)
@@ -323,6 +327,47 @@ zipgo deploy dist -d ballance.game.example.com                     # still locke
 
 See [`zipgo password`](#zipgo-password) for the commands.
 
+### Back-office
+
+A page to switch sites off and on from a phone, one per domain, behind the same
+login page:
+
+```bash
+zipgo admin set admin.yourdomain.com --generate   # prints the password once
+# → https://admin.yourdomain.com
+```
+
+<img src="./docs/admin.png" alt="zipgo back-office: the gabvdl.xyz tree" width="320">
+
+- It manages **the site its folder is nested in and every subdomain under it**:
+  `admin.yourdomain.com` (folder `yourdomain.com/admin./`) lists the apex and
+  every sub and sub-sub domain. Put one at `dev./admin./` and it manages
+  `*.dev.yourdomain.com` only.
+- Each site gets a **switch**. Off writes `"enable": false` into the site's
+  `.zipgoconfig.json` — exactly what [`zipgo off`](#zipgo-off--zipgo-on)
+  writes — so the site answers 410 and its nested subdomains go with it (they
+  show *off through …*). Every switch has an **Undo** for five seconds.
+- A **tree** view (collapsible, the nesting at a glance) and a **list** view
+  (one row per host, grouped by top-level label), a search box, and *On / Off
+  / 🔒* filters. Each row shows the type (static, SPA, proxy, redirect), the
+  lock, when the site was last deployed and its size, and opens the site.
+- Tapping a site opens its details and its **password**: set one, generate
+  one (shown once), change it or take it off — the `password` block that
+  [`zipgo password`](#zipgo-password) writes, so deploys keep it too.
+- It is **not a second source of truth**: it has no database, reads the folder
+  tree on every request and writes `.zipgoconfig.json` files the watcher
+  hot-reloads, so the page, the CLI and `zipgo ls` always agree. No upload and
+  no delete: deploys stay `zipgo deploy`'s job.
+- It **fails closed**: an `"admin": true` folder without a `password` answers
+  `403` and serves nothing. It can't switch itself off, and it is **not**
+  taken down when its parent is switched off — it is how the domain gets
+  switched back on. It is never listed in `/sub-domains-meta`.
+- Writes are same-origin JSON `POST`s only (the session cookie is
+  `SameSite=Lax`, cross-site requests are refused), the page is `no-store`,
+  `noindex`, framed by nobody, and sends no `Referer` to the sites it links to.
+- When zipgo runs as root (the Docker image), a config it writes is handed to
+  the folder's owner, so `zipgo off` and deploys over SSH can still replace it.
+
 ---
 
 ## Deploying a Site
@@ -349,6 +394,7 @@ zipgo info      # show a deployed site's remote path, size and mtime
 zipgo off       # switch a deployed site off (410 Gone, nested sites too)
 zipgo on        # switch it back on
 zipgo password  # put a site behind a login page, rotate or remove its password
+zipgo admin     # set up a domain's back-office (a page to switch its sites off/on)
 zipgo doctor    # check the local domains folder for broken sites
 zipgo enable    # install and start the systemd user service
 zipgo disable   # stop and remove the systemd user service
@@ -579,6 +625,22 @@ zipgo password hash [--stdin]                # just print a bcrypt hash
 **before its first deploy** — it is never public, not even for a second. The
 server hot-reloads: a new password takes effect, and old sessions die, within a
 second.
+
+### `zipgo admin`
+
+Sets up a domain's [back-office](#back-office): writes `{"admin": true,
+"password": {…}}` into the host's `.zipgoconfig.json`, on the deploy target or
+in a local folder (`--dir`), with the same password flags as `zipgo password`.
+
+```bash
+zipgo admin set admin.yourdomain.com             # prompts twice
+zipgo admin set admin.yourdomain.com --generate  # make one up, print it once
+zipgo admin set admin.yourdomain.com --keep-password --days 30
+zipgo admin remove admin.yourdomain.com --yes    # take the back-office down
+```
+
+Changing the password logs every open session out. `zipgo doctor` errors on an
+admin folder without a password, or on the apex.
 
 ### `zipgo doctor`
 
