@@ -44,14 +44,21 @@ type Site struct {
 	// (a parent's "enable": false takes its nested subdomains down with it).
 	// Empty when the site is on, or off by its own config.
 	OffBy string `json:"offBy,omitempty"`
-	// Protected is true when .zipgoconfig.json sets "basicAuth" — the site is
-	// served, but only to a caller with credentials. The hashes themselves are
+	// Protected is true when .zipgoconfig.json locks the site — a "password"
+	// (zipgo's login page), a "basicAuth", or both. The hashes themselves are
 	// deliberately not exposed here.
-	Protected bool   `json:"protected"`
-	Deployed  bool   `json:"deployed"`
-	Size      int64  `json:"sizeBytes"`
-	Files     int    `json:"files"`
-	Modified  string `json:"modified,omitempty"` // RFC3339, UTC
+	Protected bool `json:"protected"`
+	// Password is true when the lock is zipgo's login page ("password").
+	Password bool `json:"password"`
+	// PasswordTitle is the login page's heading, when set.
+	PasswordTitle string `json:"passwordTitle,omitempty"`
+	// SessionDays is how long a login lasts without a visit; set only for a
+	// password site.
+	SessionDays int    `json:"sessionDays,omitempty"`
+	Deployed    bool   `json:"deployed"`
+	Size        int64  `json:"sizeBytes"`
+	Files       int    `json:"files"`
+	Modified    string `json:"modified,omitempty"` // RFC3339, UTC
 	// ConfigError reports an unreadable .zipgoconfig.json — the site's own
 	// folder exists but the server will refuse to build a config from it.
 	ConfigError string `json:"configError,omitempty"`
@@ -181,6 +188,11 @@ func parseSites(want []hostDir, out string) []Site {
 			s.Enabled = cfg.Enabled()
 			s.ownOff = !cfg.Enabled()
 			s.Protected = cfg.Protected()
+			if cfg.HasPassword() {
+				s.Password = true
+				s.PasswordTitle = cfg.Password.Title
+				s.SessionDays = cfg.Password.Days()
+			}
 			if cfg.Rewrite != "" {
 				s.Type = typeProxy
 				s.Proxy = cfg.Rewrite
@@ -455,7 +467,10 @@ func Info(target deploy.Target, host string, asJSON bool) error {
 	case !s.Enabled:
 		kind += " — ⏸ off (410 Gone)"
 	}
-	if s.Protected {
+	if s.Password {
+		kind += " 🔒 password"
+	}
+	if s.Protected && !s.Password {
 		kind += " 🔒 basic-auth"
 	}
 	fmt.Printf("   Kind   : %s\n", kind)
