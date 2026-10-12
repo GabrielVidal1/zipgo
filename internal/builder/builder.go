@@ -786,11 +786,15 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr, logFormat stri
 			return len(sorted[i].Labels) > len(sorted[j].Labels)
 		})
 
-		// If a www. subdomain folder exists, redirect bare domain path → www path.
+		// If a www. subdomain folder exists, the bare domain path redirects to
+		// the www path. The route is placed just before the apex's own one —
+		// after every subdomain's, which are sorted first — because its
+		// "<apex>/*" matcher would otherwise swallow every subdomain path too.
+		var wwwRoute obj
 		if www {
 			apexPath := "/" + ds.Domain
 			wwwPath := apexPath + "/www"
-			routes = append(routes, obj{
+			wwwRoute = obj{
 				"match": arr{obj{"path": arr{apexPath, apexPath + "/*"}}},
 				"handle": arr{
 					obj{"handler": "rewrite", "strip_path_prefix": apexPath},
@@ -801,11 +805,14 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr, logFormat stri
 					},
 				},
 				"terminal": true,
-			})
+			}
 		}
 
 		for _, s := range sorted {
 			pathPrefix := s.LocalhostPath(ds.Domain)
+			if s.IsApex() && wwwRoute != nil {
+				routes = append(routes, wwwRoute)
+			}
 			if Gone(s) {
 				routes = append(routes, obj{
 					"match":    arr{obj{"path": arr{pathPrefix, pathPrefix + "/*"}}},
