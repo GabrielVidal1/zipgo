@@ -693,9 +693,9 @@ func TestServedAndGoneWhenOff(t *testing.T) {
 		{"turned off itself", sites.Site{Path: withIndex, Config: sites.Config{Enable: &fls}}, false, true},
 		{"off through a parent", sites.Site{Path: withIndex, Disabled: true}, false, true},
 		{"proxy off through a parent", sites.Site{Path: holder, Disabled: true, Config: sites.Config{Rewrite: "app:8080"}}, false, true},
-		// The folder someone turned off answers 410 even with nothing of its own…
-		{"empty holder turned off", sites.Site{Path: holder, Config: sites.Config{Enable: &fls}}, false, true},
-		// …but an empty holder merely under it stays unrouted, as it was while on.
+		// A folder with nothing of its own stays unrouted when off, as it was
+		// while on: no new host, no certificate request just to say "gone".
+		{"empty holder turned off", sites.Site{Path: holder, Config: sites.Config{Enable: &fls}}, false, false},
 		{"empty holder under a parent", sites.Site{Path: holder, Disabled: true}, false, false},
 	}
 	for _, c := range cases {

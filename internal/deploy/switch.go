@@ -43,6 +43,7 @@ type folder struct {
 	Host   string
 	Dir    string
 	Exists bool
+	Index  bool   // it holds an index.html
 	Config []byte // raw .zipgoconfig.json; nil when the folder has none
 	Own    sites.Config
 	Err    error // the config is unreadable or malformed
@@ -50,6 +51,13 @@ type folder struct {
 
 // ownOff reports whether the folder's own config switches it off.
 func (f folder) ownOff() bool { return f.Err == nil && !f.Own.Enabled() }
+
+// hasContent mirrors the builder's rule: something to serve of its own (an
+// index.html, a rewrite or a redirect). Without it, the site answers nothing —
+// on or off — and only holds subdomains.
+func (f folder) hasContent() bool {
+	return f.Index || f.Own.Rewrite != "" || f.Own.Redirect != ""
+}
 
 // siteState is the on/off picture of one host on the remote: its own folder,
 // the parent sites above it (outermost first) and, when asked for, the nested
@@ -85,7 +93,7 @@ func ParentDirs(baseDir, dir string) []string {
 }
 
 // stateScript prints one tab-separated record per site folder — role (up, self,
-// sub), dir, folder exists?, config exists?, base64 config — for dir's parents,
+// sub), dir, folder exists?, index.html?, config exists?, base64 config — for dir's parents,
 // dir itself and, when nested is set, every trailing-dot folder under dir. With
 // mkdir the folder tree is created first (what a deploy needs anyway), so the
 // state costs no extra SSH round trip.
@@ -94,7 +102,7 @@ func stateScript(baseDir, dir string, mkdir, nested bool) string {
 	if mkdir {
 		b.WriteString("mkdir -p " + shQuote(dir) + " || exit 1\n")
 	}
-	b.WriteString(`show() { e=0; [ -d "$2" ] && e=1; c=0; cf=; if [ -f "$2/` + sites.ConfigFileName + `" ]; then c=1; cf=$(base64 "$2/` + sites.ConfigFileName + `" | tr -d '\n'); fi; printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$e" "$c" "$cf"; }` + "\n")
+	b.WriteString(`show() { e=0; [ -d "$2" ] && e=1; ix=0; [ -f "$2/index.html" ] && ix=1; c=0; cf=; if [ -f "$2/` + sites.ConfigFileName + `" ]; then c=1; cf=$(base64 "$2/` + sites.ConfigFileName + `" | tr -d '\n'); fi; printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$e" "$ix" "$c" "$cf"; }` + "\n")
 	for _, p := range ParentDirs(baseDir, dir) {
 		b.WriteString("show up " + shQuote(p) + "\n")
 	}
@@ -115,16 +123,16 @@ func parseState(baseDir, out string) (siteState, error) {
 	seenSelf := false
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(line, "\r"), "\t")
-		if len(f) < 5 {
+		if len(f) < 6 {
 			continue
 		}
 		host, ok := HostFromRemote(baseDir, f[1])
 		if !ok {
 			continue
 		}
-		fo := folder{Host: host, Dir: f[1], Exists: f[2] == "1"}
-		if f[3] == "1" {
-			raw, err := base64.StdEncoding.DecodeString(f[4])
+		fo := folder{Host: host, Dir: f[1], Exists: f[2] == "1", Index: f[3] == "1"}
+		if f[4] == "1" {
+			raw, err := base64.StdEncoding.DecodeString(f[5])
 			if err != nil {
 				fo.Err = fmt.Errorf("unreadable %s", sites.ConfigFileName)
 			} else {
@@ -378,8 +386,15 @@ func switchOne(w io.Writer, tgt Target, host string, on, dryRun bool) error {
 				return err
 			}
 		}
-		fmt.Fprintf(w, "⏸  %s %s off — it answers 410 Gone\n", host, isNow)
-		if live := liveNested(st); len(live) > 0 {
+		live := liveNested(st)
+		if st.Self.hasContent() {
+			fmt.Fprintf(w, "⏸  %s %s off — it answers 410 Gone\n", host, isNow)
+		} else {
+			// Mirrors builder.Gone: a holder of subdomains has no page of its
+			// own to replace, so only its nested sites change.
+			fmt.Fprintf(w, "⏸  %s %s off — it serves nothing itself, so only its nested sites answer 410 Gone\n", host, isNow)
+		}
+		if len(live) > 0 {
 			fmt.Fprintf(w, "   and %d nested site%s with it: %s\n", len(live), plural(len(live)), strings.Join(live, ", "))
 		}
 		return nil

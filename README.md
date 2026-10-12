@@ -459,7 +459,8 @@ hot-reloads within a second.
 
 While a site is off:
 
-- every request to it answers a **410 Gone** page; it keeps its certificate;
+- every request to it answers a **410 Gone** page; it keeps its certificate (a
+  folder that only holds subdomains had nothing to serve and stays that way);
 - **its nested subdomains are off too** — `off` lists the ones it takes down;
 - `zipgo ls` marks it `⏸ off` (or `⏸ off through <parent>`), `zipgo info`
   shows it in `Kind`, and `ls --json` reports `"enabled": false`;
