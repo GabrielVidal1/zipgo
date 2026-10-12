@@ -148,6 +148,16 @@ Ordered roughly by value. Each item is one session of work.
       `--prune` is a clearer spelling of the default `--delete` mirror. Parsing
       lives in `internal/deploy/summary.go` (`ParseItemized`/`WriteSummary`,
       pure and table-tested, plus a real-rsync e2e test).
+- [x] `zipgo off <host>` / `zipgo on <host>` — switch a deployed site off
+      without deleting it, and back.
+      Edits the existing `"enable"` key of the remote `.zipgoconfig.json` over
+      SSH (other keys and their order kept, renamed into place). A site that is
+      off now answers a 410 Gone page and keeps its certificate (it used to just
+      vanish, TLS error and all), and the switch **cascades** to every nested
+      subdomain. `zipgo deploy` keeps an off site off (its config is excluded
+      from the mirror, the build's own config merged back with `enable:false`);
+      `ls`/`info` mark off sites (`offBy` in `--json`); `doctor` follows the
+      cascade and no longer suggests `enable:false` for subdomain-holder folders.
 - [ ] Per-site deploy history: keep the last N deploys under a hidden
       `.zipgo-versions/` folder and add `zipgo rollback <host>` to swap the
       previous one back in.
