@@ -109,12 +109,16 @@ var knownConfigKeys = map[string]bool{
 	"redirectStatus":         true,
 	"allowHttp":              true,
 	"basicAuth":              true,
+	"password":               true,
 	"headers":                true,
 }
 
+// knownPasswordKeys are the keys of the "password" block.
+var knownPasswordKeys = map[string]bool{"hash": true, "title": true, "sessionDays": true}
+
 // knownKeyList is the human list of keys printed as a hint next to an unknown
 // key, in a stable order.
-const knownKeyList = "enable, rewrite, rewritePath, rewritePathPassthrough, redirect, redirectStatus, allowHttp, basicAuth, headers"
+const knownKeyList = "enable, rewrite, rewritePath, rewritePathPassthrough, redirect, redirectStatus, allowHttp, basicAuth, password, headers"
 
 // redirectStatuses are the status codes "redirectStatus" accepts: 301/308
 // permanent, 302/307 temporary.
@@ -350,6 +354,9 @@ func (r *Report) checkConfig(dir, host string) (sites.Config, bool) {
 	r.checkRewritePath(cfg, path, host)
 	r.checkRedirect(dir, path, host, cfg)
 	r.checkBasicAuth(cfg, path, host)
+	if p, ok := raw["password"]; ok {
+		r.checkPassword(p, cfg, path, host)
+	}
 
 	return cfg, cfg.Enabled()
 }
@@ -468,6 +475,67 @@ func (r *Report) checkBasicAuth(cfg sites.Config, path, host string) {
 	}
 }
 
+// checkPassword validates the "password" block. The block alone locks the site,
+// so every mistake in it fails closed — a site nobody can enter, never an open
+// one — and the errors say how to get back in.
+func (r *Report) checkPassword(raw json.RawMessage, cfg sites.Config, path, host string) {
+	set := "set it with `zipgo password set " + host + "`"
+	var block map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &block); err != nil || block == nil {
+		r.add(Finding{
+			Level: Error, Host: host, Path: path,
+			Msg:  "\"password\" must be an object: {\"hash\": \"<bcrypt hash>\", \"title\": \"…\"}",
+			Hint: set,
+		})
+		return
+	}
+	var unknown []string
+	for k := range block {
+		if !knownPasswordKeys[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	for _, k := range unknown {
+		r.add(Finding{
+			Level: Warn, Host: host, Path: path,
+			Msg:  fmt.Sprintf("unknown key %q in \"password\" is ignored", k),
+			Hint: "known keys: hash, title, sessionDays",
+		})
+	}
+	if cfg.Password == nil {
+		return // wrong-typed values: already reported by the typed decode
+	}
+	if bad := invalidBcrypt(cfg.Password.Hash); bad != "" {
+		r.add(Finding{
+			Level: Error, Host: host, Path: path,
+			Msg:  fmt.Sprintf("the password hash is not usable: %s — the site is locked and nobody can log in", bad),
+			Hint: set,
+		})
+	}
+	if d := cfg.Password.SessionDays; d < 0 || d > sites.MaxSessionDays {
+		r.add(Finding{
+			Level: Warn, Host: host, Path: path,
+			Msg:  fmt.Sprintf("\"sessionDays\": %d is out of range — sessions last %d days", d, cfg.Password.Days()),
+			Hint: fmt.Sprintf("use 1 to %d (default %d)", sites.MaxSessionDays, sites.DefaultSessionDays),
+		})
+	}
+	if cfg.HasBasicAuth() {
+		r.add(Finding{
+			Level: Warn, Host: host, Path: path,
+			Msg:  "\"password\" and \"basicAuth\" are both set — visitors get the login page, then the browser's basic-auth prompt",
+			Hint: "keep one lock: drop \"basicAuth\" unless the second prompt is deliberate",
+		})
+	}
+	if cfg.HTTPAllowed() {
+		r.add(Finding{
+			Level: Warn, Host: host, Path: path,
+			Msg:  "\"allowHttp\" is ignored on a password site — it is served over HTTPS only",
+			Hint: "the session cookie is Secure and a password must not cross the network in clear; drop \"allowHttp\"",
+		})
+	}
+}
+
 // invalidBcrypt reports why s is not a bcrypt hash Caddy can compare against,
 // or "" when it is one. Passwords are never compared in plaintext, so anything
 // that isn't a hash is a site nobody can log into.
@@ -557,6 +625,9 @@ func (r *Report) checkContent(dir, host string, cfg sites.Config) {
 	// is a warning rather than an error — but it still means the host itself has
 	// nothing to serve.
 	level, hint := Error, "add an index.html, or set \"rewrite\" (proxy) or \"redirect\" in "+sites.ConfigFileName
+	if cfg.HasPassword() {
+		hint = "deploy the site's build (`zipgo deploy <dir> -d " + host + "` keeps the password)"
+	}
 	if hasSubdomainChild(dir) {
 		level = Warn
 		// Not "enable": false — that would switch off every subdomain under it.

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"zipgo/internal/gate"
 	"zipgo/internal/meta"
 	"zipgo/internal/sites"
 
@@ -293,7 +294,10 @@ func hasWww(all []sites.Site) bool {
 // the child's folder name (its leaf label plus a trailing dot, e.g. "docs.").
 // A site C is a direct child of parent when its label chain is parent's chain
 // with exactly one extra leaf prepended (chains are leaf-first). Children
-// without an index.html are skipped. Returns nil when parent has no children.
+// without an index.html are skipped, and so are protected ones (a password or
+// basicAuth): the listing is public, and a locked site's title and description
+// must not leak through its parent's feed. Returns nil when parent has no
+// children.
 func childMeta(parent sites.Site, all []sites.Site) map[string]meta.Meta {
 	var result map[string]meta.Meta
 	for _, c := range all {
@@ -303,7 +307,7 @@ func childMeta(parent sites.Site, all []sites.Site) map[string]meta.Meta {
 		if !labelsEqual(c.Labels[1:], parent.Labels) {
 			continue
 		}
-		if c.Off() || !hasIndex(c) {
+		if c.Off() || !hasIndex(c) || c.Config.Protected() {
 			continue
 		}
 		m, err := meta.Extract(filepath.Join(c.Path, "index.html"))
@@ -400,21 +404,25 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 			if !served(s) {
 				continue
 			}
-			httpAllowed := s.Config.HTTPAllowed()
+			// A password site is HTTPS-only whatever allowHttp says: its session
+			// cookie is Secure (a browser would never send it back over HTTP),
+			// and a password has no business crossing the network in clear.
+			httpAllowed := s.Config.HTTPAllowed() && !s.Config.HasPassword()
+			host := s.Host(ds.Domain)
 			// Serve /sub-domains-meta for any site that has child subdomains,
 			// before the site's own file_server so the path match wins.
 			if cm := childMeta(s, ds.Sites); cm != nil {
-				mr, err := metaRoute(obj{"host": arr{s.Host(ds.Domain)}, "path": arr{MetaPath}}, cm)
+				mr, err := metaRoute(obj{"host": arr{host}, "path": arr{MetaPath}}, cm)
 				if err != nil {
-					return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
+					return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, host, err)
 				}
-				mr = guard(mr, s)
+				mr = guard(mr, s, host, "")
 				routes = append(routes, mr)
 				if httpAllowed {
 					httpRoutes = append(httpRoutes, mr)
 				}
 			}
-			r, err := domainRoute(s, ds.Domain)
+			r, err := domainRoute(s, host)
 			if err != nil {
 				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
 			}
@@ -470,13 +478,13 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 	return finalize(cfg)
 }
 
-func domainRoute(s sites.Site, rootDomain string) (obj, error) {
-	h, err := siteHandler(s, "")
+func domainRoute(s sites.Site, host string) (obj, error) {
+	h, err := siteHandler(s, host, "")
 	if err != nil {
 		return nil, err
 	}
 	return obj{
-		"match":    arr{obj{"host": arr{s.Host(rootDomain)}}},
+		"match":    arr{obj{"host": arr{host}}},
 		"handle":   arr{h},
 		"terminal": true,
 	}, nil
@@ -486,21 +494,93 @@ func domainRoute(s sites.Site, rootDomain string) (obj, error) {
 // site declares a redirect target, a reverse_proxy subroute when it declares a
 // rewrite upstream, otherwise the file_server subroute. A site that (wrongly)
 // sets both redirect and rewrite redirects — doctor flags the combination.
-// stripPrefix is the localhost path prefix to strip ("" in domain mode).
-// A site with basicAuth is wrapped so the credential check runs before anything
-// is served — files, SPA fallback and proxied upstreams alike.
-func siteHandler(s sites.Site, stripPrefix string) (obj, error) {
+// host is the site's host and stripPrefix the localhost path prefix to strip
+// ("" in domain mode). A locked site (password and/or basicAuth) is wrapped so
+// the check runs before anything is served — files, SPA fallback and proxied
+// upstreams alike.
+func siteHandler(s sites.Site, host, stripPrefix string) (obj, error) {
 	inner, err := unguardedSiteHandler(s, stripPrefix)
 	if err != nil {
 		return nil, err
 	}
-	if auth := basicAuthHandler(s.Config); auth != nil {
-		return obj{"handler": "subroute", "routes": arr{
-			obj{"handle": arr{auth}},
-			obj{"handle": arr{inner}},
-		}}, nil
+	checks := lockHandlers(s, host, stripPrefix)
+	if len(checks) == 0 {
+		return inner, nil
 	}
-	return inner, nil
+	routes := arr{}
+	for _, h := range checks {
+		routes = append(routes, obj{"handle": arr{h}})
+	}
+	return obj{"handler": "subroute", "routes": append(routes, obj{"handle": arr{inner}})}, nil
+}
+
+// lockHandlers are the checks a locked site runs before serving anything, in
+// order: the login page first (a visitor with no session never sees anything
+// else), then HTTP basic auth. Both run when both are set — two locks, two
+// prompts; doctor warns about that combination. Empty for a public site.
+func lockHandlers(s sites.Site, host, prefix string) arr {
+	var hs arr
+	if h := passwordHandler(s.Config, host, prefix); h != nil {
+		hs = append(hs, h)
+	}
+	if h := basicAuthHandler(s.Config); h != nil {
+		hs = append(hs, h)
+	}
+	return hs
+}
+
+// passwordHandler builds the login-page handler (internal/gate) for a site's
+// "password" block, or nil when it has none. prefix is the site's localhost
+// path prefix; localhost mode is plain HTTP, so it also makes the session
+// cookie non-Secure.
+func passwordHandler(c sites.Config, host, prefix string) obj {
+	if !c.HasPassword() {
+		return nil
+	}
+	h := obj{
+		"handler":      gate.HandlerName,
+		"host":         host,
+		"hash":         c.Password.Hash,
+		"session_days": c.Password.Days(),
+	}
+	if t := strings.TrimSpace(c.Password.Title); t != "" {
+		h["title"] = t
+	}
+	if prefix != "" {
+		h["prefix"] = prefix
+		h["insecure"] = true
+	}
+	return h
+}
+
+// lockedHeaders are the defaults a password site's responses get on top of the
+// usual security headers (a site's own "headers" still override them):
+// revalidate every time, so content a browser cached doesn't outlive a logout
+// or a password change, and stay out of search engines even if a page leaks.
+var lockedHeaders = map[string]string{
+	"Cache-Control": "private, no-cache",
+	"X-Robots-Tag":  "noindex, nofollow",
+}
+
+// siteHeaders is the custom-headers map a site's handlers apply: its own
+// "headers", on top of lockedHeaders when it has a password.
+func siteHeaders(c sites.Config) map[string]string {
+	if !c.HasPassword() {
+		return c.Headers
+	}
+	out := map[string]string{}
+	for k, v := range lockedHeaders {
+		out[k] = v
+	}
+	for k, v := range c.Headers {
+		for d := range lockedHeaders {
+			if strings.EqualFold(d, k) {
+				delete(out, d)
+			}
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // unguardedSiteHandler picks what the site serves, before any auth check is
@@ -522,7 +602,7 @@ func unguardedSiteHandler(s sites.Site, stripPrefix string) (obj, error) {
 	if s.HasNotFoundPage() {
 		notFound = s.NotFoundPage
 	}
-	return fileHandler(absPath, s.IsSPA, stripPrefix, hide, authorizedOrigins(s), s.Config.Headers, notFound), nil
+	return fileHandler(absPath, s.IsSPA, stripPrefix, hide, authorizedOrigins(s), siteHeaders(s.Config), notFound), nil
 }
 
 // redirectHandler builds a subroute that answers every request for the site with
@@ -530,7 +610,7 @@ func unguardedSiteHandler(s sites.Site, stripPrefix string) (obj, error) {
 // localhost mode the site's path prefix is stripped first, so the placeholder in
 // the Location header expands to the path *within* the site.
 func redirectHandler(s sites.Site, stripPrefix string) obj {
-	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), s.Config.Headers)}}}
+	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), siteHeaders(s.Config))}}}
 	if stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
 			"handler":           "rewrite",
@@ -569,7 +649,7 @@ func redirectLocation(redirect string) string {
 // hashes; the hash cache keeps a protected site from paying a full bcrypt
 // comparison on every request.
 func basicAuthHandler(c sites.Config) obj {
-	if !c.Protected() {
+	if !c.HasBasicAuth() {
 		return nil
 	}
 	users := make([]string, 0, len(c.BasicAuth))
@@ -591,16 +671,17 @@ func basicAuthHandler(c sites.Config) obj {
 	}
 }
 
-// guard prepends a site's basic-auth check to an already-built route's handler
-// chain, so an endpoint served beside the site (sub-domains-meta) is protected
-// with it rather than leaking the child listing of a password-protected site.
-func guard(route obj, s sites.Site) obj {
-	auth := basicAuthHandler(s.Config)
-	if auth == nil {
+// guard prepends a site's lock checks (lockHandlers) to an already-built
+// route's handler chain, so an endpoint served beside the site
+// (sub-domains-meta) is protected with them rather than leaking the child
+// listing of a password-protected site.
+func guard(route obj, s sites.Site, host, prefix string) obj {
+	checks := lockHandlers(s, host, prefix)
+	if len(checks) == 0 {
 		return route
 	}
 	if h, ok := route["handle"].(arr); ok {
-		route["handle"] = append(arr{auth}, h...)
+		route["handle"] = append(checks, h...)
 	}
 	return route
 }
@@ -611,7 +692,7 @@ func guard(route obj, s sites.Site) obj {
 // prefix before proxying.
 func proxyHandler(s sites.Site, stripPrefix string) obj {
 	dial, useTLS := proxyDial(s.Config.Rewrite)
-	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), s.Config.Headers)}}}
+	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), siteHeaders(s.Config))}}}
 	if stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
 			"handler":           "rewrite",
@@ -744,11 +825,11 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr, logFormat stri
 				if err != nil {
 					return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.LocalhostPath(ds.Domain), err)
 				}
-				mr = guard(mr, s)
+				mr = guard(mr, s, s.Host(ds.Domain), pathPrefix)
 				routes = append(routes, mr)
 			}
 
-			h, err := siteHandler(s, pathPrefix)
+			h, err := siteHandler(s, s.Host(ds.Domain), pathPrefix)
 			if err != nil {
 				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.LocalhostPath(ds.Domain), err)
 			}

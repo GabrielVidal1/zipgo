@@ -215,3 +215,30 @@ func TestParseSwitchesCascade(t *testing.T) {
 		t.Errorf("got %v\nwant %v", got, want)
 	}
 }
+
+// A password site is protected, says so, and never exposes its hash.
+func TestParseSitesPassword(t *testing.T) {
+	const hash = "$2a$12$lxJfaQMx3WaZsB7K5ZvLz.5Sw1mdcAx2fwJycu2oQJfxqLSySlTK."
+	want := []hostDir{
+		{host: "ballance.game.example.com", dir: "/base/example.com/game./ballance."},
+		{host: "staging.example.com", dir: "/base/example.com/staging."},
+	}
+	out := strings.Join([]string{
+		record("/base/example.com/game./ballance.", "1", "10", "1", "1752500000", "1", "1",
+			`{"password":{"hash":"`+hash+`","title":"Ballance"}}`),
+		record("/base/example.com/staging.", "1", "10", "1", "1752500001", "1", "0",
+			`{"basicAuth":{"claude":"`+hash+`"}}`),
+	}, "\n")
+	got := parseSites(want, out)
+	b := got[0]
+	if !b.Protected || !b.Password || b.PasswordTitle != "Ballance" || b.SessionDays != 7 || b.Type != typeSPA {
+		t.Errorf("ballance = %+v", b)
+	}
+	if s := got[1]; !s.Protected || s.Password {
+		t.Errorf("basicAuth site = %+v, want protected without a password", s)
+	}
+	blob, _ := json.Marshal(got)
+	if strings.Contains(string(blob), hash) {
+		t.Errorf("JSON leaks the hash: %s", blob)
+	}
+}

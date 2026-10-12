@@ -289,7 +289,7 @@ func TestDeployKeepsAnOffSiteOff(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, sites.ConfigFileName), []byte(`{"headers": {"X-B": "2"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := mergeKeptOff(tgt, remote, src); err != nil {
+	if err := mergeKept(tgt, remote, src, []byte(`{"enable": false}`), true); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ := readConfigFile(t, remote)

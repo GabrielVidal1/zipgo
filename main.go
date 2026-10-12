@@ -26,15 +26,19 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/metrics"
 	"github.com/fsnotify/fsnotify"
 
-	"zipgo/internal/builder"
+	"zipgo/internal/builder" // also registers http.handlers.zipgo_password (internal/gate)
 	"zipgo/internal/config"
 	"zipgo/internal/deploy"
 	"zipgo/internal/doctor"
+	"zipgo/internal/password"
 	"zipgo/internal/remote"
 	"zipgo/internal/service"
 	"zipgo/internal/sites"
 	"zipgo/internal/zipconfig"
 )
+
+// version is stamped by the release workflow (-ldflags "-X main.version=vX.Y.Z").
+var version = "dev"
 
 const deployUsage = `Usage: zipgo deploy [dir] [-d <host>] [--ssh user@host:/base/path]
 
@@ -220,6 +224,12 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	case "password":
+		runPassword(os.Args[2:])
+		return
+	case "version", "--version", "-v":
+		fmt.Println("zipgo", version)
+		return
 	case "help", "--help", "-h":
 		fmt.Println("Usage: zipgo [command]")
 		fmt.Println()
@@ -231,6 +241,8 @@ func main() {
 		fmt.Println("  off      switch a deployed site off (410 Gone, nested sites too)")
 		fmt.Println("  on       switch a site that is off back on")
 		fmt.Println("  doctor   check the local domains folder for broken sites")
+		fmt.Println("  password put a site behind a login page, rotate or remove its password")
+		fmt.Println("  version  print the version")
 		fmt.Println("  enable   Install and start the systemd user service")
 		fmt.Println("  disable  Stop and remove the systemd user service")
 		fmt.Println("  status   Show service status")
@@ -242,6 +254,8 @@ func main() {
 		fmt.Print(switchUsage)
 		fmt.Println()
 		fmt.Print(doctorUsage)
+		fmt.Println()
+		fmt.Print(password.Usage)
 		return
 	case "serve", "":
 		// fall through to server startup
@@ -373,6 +387,73 @@ func main() {
 
 	fmt.Println("\n🛑  Shutting down...")
 	caddy.Stop()
+}
+
+// runPassword runs `zipgo password …`. The target resolves like deploy's: --ssh,
+// else the project's package.json "zipgo" target, else .zipgo.json; --dir works
+// on a local domains folder instead.
+func runPassword(args []string) {
+	opts, err := password.ParseArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, password.Usage)
+		os.Exit(2)
+	}
+	if opts.Verb == "hash" {
+		if err := password.Run(opts, nil, os.Stdin, os.Stdout); err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		return
+	}
+
+	var store password.Store
+	var tgt deploy.Target
+	if opts.Dir != "" {
+		store = password.Local{Base: opts.Dir}
+	} else {
+		proj, root := loadConfigs()
+		spec := opts.SSH
+		if spec == "" {
+			spec = proj.Target
+		}
+		if spec == "" {
+			spec = root.Target
+		}
+		if named, ok := root.Targets[spec]; ok {
+			spec = named
+		}
+		if spec == "" {
+			log.Fatalf("❌  no target: pass --ssh user@host:/base (or --dir <domains folder>), or add a target to .zipgo.json\n")
+		}
+		if tgt, err = deploy.ParseTarget(spec); err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		store = password.Remote{Target: tgt}
+	}
+
+	if opts.Verb == "status" {
+		var list []password.Status
+		if opts.Host != "" {
+			s, err := password.StatusOf(store, opts.Host)
+			if err != nil {
+				log.Fatalf("❌  %v\n", err)
+			}
+			list = []password.Status{s}
+		} else if opts.Dir != "" {
+			list, err = password.LocalLocked(opts.Dir)
+		} else {
+			list, err = password.RemoteLocked(tgt)
+		}
+		if err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		if err := password.PrintStatus(os.Stdout, list, opts.JSON, opts.Host != ""); err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		return
+	}
+	if err := password.Run(opts, store, os.Stdin, os.Stdout); err != nil {
+		log.Fatalf("❌  %v\n", err)
+	}
 }
 
 // siteKind is the padded label printed next to a site in the startup listing,

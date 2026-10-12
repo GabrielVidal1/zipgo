@@ -119,6 +119,15 @@ Ordered roughly by value. Each item is one session of work.
       compares against a hash, so it would lock everyone out *and* commit a
       secret), on a bogus hash and on an empty username. `ls`/`info --json`
       report `protected`, never the hashes.
+- [x] A real login page for private sites (`"password"` in `.zipgoconfig.json`,
+      managed with `zipgo password set|status|remove <host>`) — the shared
+      password the browser's basic-auth dialog can't give: a generic page with
+      a per-site title, a signed 7-day session renewed while in use, logout,
+      throttling, noindex. Shipped in `internal/gate` (a Caddy module) and
+      `internal/password` (the CLI, over SSH or `--dir`). Rotating logs
+      everyone out; a locked site is HTTPS-only, out of its parent's
+      `sub-domains-meta`, and **a deploy never unlocks it** (the server's lock
+      is kept, even when a build ships its own `.zipgoconfig.json`).
 - [x] Serve a custom `404.html` when a non-SPA site has one, instead of Caddy's
       default plain-text 404.
       The file's presence *is* the config. The status stays 404 (a `status_code`

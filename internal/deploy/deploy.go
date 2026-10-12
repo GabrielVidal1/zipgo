@@ -13,9 +13,17 @@
 //	/home/gabrielvidal/services/domains/gabvdl.xyz/game./love-letters.
 //
 // and serves it at https://love-letters.game.gabvdl.xyz once zipgo hot-reloads.
+//
+// A deploy ships files, never server state. A site that is switched off
+// (`zipgo off`) stays off, and a locked site ("password" or "basicAuth" in its
+// .zipgoconfig.json, set with `zipgo password`) stays locked: the mirror leaves
+// that file alone, and a build that ships a config of its own has it merged in
+// without undoing either.
 package deploy
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -245,21 +253,30 @@ func Run(o Options) error {
 		fmt.Printf("🌐  %s\n", host)
 		fmt.Printf("   → %s:%s\n", tgt.Host, remoteDir)
 
-		dest := tgt.Host + ":" + remoteDir + "/"
+		dest := remoteSpec(tgt.Host, remoteDir+"/")
 
-		// Read the site's on/off switch — creating the folder tree on the way
+		// Read the site's config — creating the folder tree on the way
 		// (trailing dots and all), except in a dry run — so a deploy never
-		// flips it: a site that is off stays off, whatever the build ships.
+		// changes the server's state: a site that is off stays off, a locked
+		// site stays locked, whatever the build ships.
 		st, err := inspect(tgt, host, !o.DryRun, false)
 		if err != nil {
 			return err
 		}
-		jo, keepOff := o, st.Self.ownOff()
-		if keepOff {
+		keepOff := st.Self.ownOff()
+		_, locks, _ := sites.Locks(st.Self.Config)
+		jo, keep := o, keepConfig(st.Self)
+		if keep {
 			// Leave the remote config alone (an excluded file is also safe
 			// from --delete); the build's own config, if any, is merged in
-			// below with the switch kept off.
+			// below without undoing the switch or the lock.
 			jo.Excludes = append(append([]string{}, o.Excludes...), "/"+sites.ConfigFileName)
+		}
+		if len(locks) > 0 {
+			fmt.Printf("   🔒 %s kept: the site stays locked\n", strings.Join(locks, " + "))
+		}
+		if st.Self.Err != nil {
+			fmt.Printf("   ⚠️  the server's %s is unusable (%v) — left untouched\n", sites.ConfigFileName, st.Self.Err)
 		}
 
 		if o.DryRun {
@@ -282,8 +299,8 @@ func Run(o Options) error {
 		if err := rsync.Run(); err != nil {
 			return fmt.Errorf("rsync to %q: %w", host, err)
 		}
-		if keepOff {
-			if err := mergeKeptOff(tgt, remoteDir, job.Src); err != nil {
+		if keep && st.Self.Err == nil {
+			if err := mergeKept(tgt, remoteDir, job.Src, st.Self.Config, keepOff); err != nil {
 				return fmt.Errorf("%s: %w", host, err)
 			}
 		}
@@ -310,10 +327,22 @@ func printKeptOff(host string, st siteState, keepOff bool, verb string) bool {
 	return true
 }
 
-// mergeKeptOff publishes the build's own .zipgoconfig.json (rsync skipped it)
-// with the site still switched off, so its other keys — headers, basicAuth —
-// land as they would on a live deploy. Without one, the remote config stays.
-func mergeKeptOff(tgt Target, remoteDir, src string) error {
+// keepConfig reports whether a deploy must leave the site's remote
+// .zipgoconfig.json out of the mirror: it switches the site off, it locks it,
+// or it can't be read — in which case it might be either.
+func keepConfig(f folder) bool {
+	if f.Err != nil {
+		return true
+	}
+	_, locks, err := sites.Locks(f.Config)
+	return err != nil || len(locks) > 0 || f.ownOff()
+}
+
+// mergeKept publishes the build's own .zipgoconfig.json (rsync skipped it)
+// on top of what the server keeps (see KeepServerState), so its other keys —
+// headers, rewrite — land as they would on any deploy. Without one, the remote
+// config stays as it is.
+func mergeKept(tgt Target, remoteDir, src string, remote []byte, keepOff bool) error {
 	local, err := os.ReadFile(filepath.Join(src, sites.ConfigFileName))
 	if os.IsNotExist(err) {
 		return nil
@@ -321,14 +350,75 @@ func mergeKeptOff(tgt Target, remoteDir, src string) error {
 	if err != nil {
 		return err
 	}
-	out, changed, err := SetEnable(local, false)
+	out, ignored, err := KeepServerState(local, remote, keepOff)
 	if err != nil {
 		return fmt.Errorf("%s in the build: %w", sites.ConfigFileName, err)
 	}
-	if !changed {
-		out = local
+	if len(ignored) > 0 {
+		fmt.Printf("   ⚠️  the build's own %s is ignored — the server's lock wins (zipgo password set to change it)\n",
+			strings.Join(ignored, " + "))
+	}
+	if sameJSON(out, remote) {
+		return nil
 	}
 	return writeConfig(tgt, remoteDir, out)
+}
+
+// KeepServerState returns the build's .zipgoconfig.json (local) as it must land
+// on a server whose current one is remote: switched off when keepOff, and with
+// every lock of remote put back in place of the build's own. A deploy can
+// neither unlock a site nor change its password; `zipgo password` is the one
+// way to do that. ignored names the build's own locks that were overridden.
+// Keys keep the build's order; a lock the build lacks is appended.
+func KeepServerState(local, remote []byte, keepOff bool) (out []byte, ignored []string, err error) {
+	out = local
+	if keepOff {
+		o, changed, err := SetEnable(local, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		if changed {
+			out = o
+		}
+	}
+	locks, names, err := sites.Locks(remote)
+	if err != nil || len(names) == 0 {
+		return out, nil, err
+	}
+	var ms []member
+	if len(bytes.TrimSpace(out)) > 0 {
+		if ms, err = parseObject(out); err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, k := range names {
+		placed := false
+		for i := range ms {
+			if ms[i].key != k {
+				continue
+			}
+			if !placed && !sameJSON(ms[i].val, locks[k]) && string(ms[i].val) != "null" {
+				ignored = append(ignored, k)
+			}
+			ms[i].val, placed = locks[k], true
+		}
+		if !placed {
+			ms = append(ms, member{key: k, val: locks[k]})
+		}
+	}
+	out, err = marshalObject(ms)
+	return out, ignored, err
+}
+
+// sameJSON reports whether two JSON documents are equal as values.
+func sameJSON(a, b []byte) bool {
+	var va, vb any
+	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+		return false
+	}
+	ja, _ := json.Marshal(va)
+	jb, _ := json.Marshal(vb)
+	return bytes.Equal(ja, jb)
 }
 
 // rsyncArgs builds the rsync argument list for one job. dryRun switches it into

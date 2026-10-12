@@ -23,7 +23,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **Multiple domains** — host several domains at once, each in its own folder
 - **SPA support** — auto-detected; all unknown paths fall back to `index.html`
 - **Custom 404 page** — drop a `404.html` in a static site's folder and it becomes the body of its 404s
-- **Password-protected sites** — `"basicAuth"` in a site's `.zipgoconfig.json` puts a staging subdomain behind HTTP basic auth
+- **Password-protected sites** — `zipgo password set <host>` puts a whole site behind a login page (one shared password, a session cookie); deploys keep the lock. `"basicAuth"` is there too for HTTP basic auth
 - **Switch a site off** — `zipgo off <host>` takes a deployed site down (410 Gone, nested subdomains included) without deleting it; `zipgo on <host>` brings it back
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
 - **Systemd integration** — `zipgo enable` sets up a user service that starts on boot
@@ -154,7 +154,12 @@ hides it). All keys are optional:
   "headers": {                     // extra response headers, merged into the
     "Cache-Control": "public, max-age=31536000, immutable"
   },                               //   security headers zipgo already sends
-  "basicAuth": {                   // put the whole site behind a password
+  "password": {                    // a login page in front of the whole site
+    "hash": "$2a$12$Zkx19XLiW…",   //   *bcrypt hash* of the shared password
+    "title": "Ballance",           //   the login page's heading (default: host)
+    "sessionDays": 7               //   how long a login lasts without a visit
+  },                               //   (`zipgo password set` writes all this)
+  "basicAuth": {                   // or HTTP basic auth
     "alice": "$2a$14$Zkx19XLiW…"   //   username → *bcrypt hash*, never a
   }                                //   plaintext password
 }
@@ -241,6 +246,9 @@ hides it). All keys are optional:
 
   Headers apply to every kind of site: on a `rewrite` proxy they override
   whatever the upstream sent, and on a `redirect` they ride along with the 301/302.
+- **`password`** puts the whole site behind zipgo's login page — see
+  [Password-protected sites](#password-protected-sites). You set it with
+  `zipgo password set <host>` rather than by hand.
 - **`basicAuth`** puts the site behind HTTP basic auth — one file turns a
   staging subdomain into a password-protected one. Keys are usernames, values
   are **bcrypt hashes** (`caddy hash-password`, or `htpasswd -nbB alice s3cret`
@@ -267,6 +275,54 @@ echo "{\"basicAuth\": {\"alice\": \"$(htpasswd -nbB alice s3cret | cut -d: -f2)\
 
 Edits are picked up by the file watcher and hot-reloaded like any other change.
 
+### Password-protected sites
+
+One shared password in front of a whole site — a game in progress, a share
+with a few people — with a real login page rather than the browser's
+basic-auth dialog:
+
+```bash
+zipgo password set ballance.game.example.com --title "Ballance"   # prompts twice
+zipgo deploy dist -d ballance.game.example.com                     # still locked
+```
+
+- **Every path** answers `401` with the same small login page until the
+  visitor has a session: the index, every asset, `/sub-domains-meta`, a 404.
+  Nothing of the site is served before the password. The page is generic —
+  only its title changes — `noindex`, `no-store`, with a strict CSP.
+- The right password sets a **session cookie** (`__Host-`, `Secure`,
+  `HttpOnly`, `SameSite=Lax`) and sends the visitor back to the page they
+  asked for. It lasts `sessionDays` (default **7**) and is **renewed while in
+  use**, so someone who keeps coming back never sees the page again.
+  `/__zipgo/logout` ends it.
+- **Changing the password logs everyone out.** Sessions are signed with a key
+  derived from a server secret (kept next to the certificates, in Caddy's data
+  dir: it survives restarts), the host and the password hash — and every new
+  hash has a new salt. A cookie never opens another site.
+- Wrong passwords are **throttled**: 10 a minute per visitor IP, 60 a minute
+  per site, then `429` for the rest of the minute. Behind a TCP proxy, set
+  [`ZIPGO_PROXY_PROTOCOL_ALLOW`](#behind-a-tcp-proxy-proxy-protocol) so zipgo
+  sees real visitor IPs. Logins and throttling are logged.
+- Only a **bcrypt hash** is stored, never the password. A `password` block whose
+  hash is missing or unusable **fails closed**: the site stays locked and nobody
+  gets in (`zipgo doctor` says so).
+- A locked site is **HTTPS-only** (`allowHttp` is ignored), its responses get
+  `Cache-Control: private, no-cache` and `X-Robots-Tag: noindex, nofollow`
+  (override them with `headers`), and it is **left out of its parent's
+  `/sub-domains-meta`**, so its title and description don't leak through a
+  public feed. A `basicAuth` site is left out too.
+- zipgo picks the site by `Host` header whatever the TLS SNI, and the check
+  runs inside the host's own route, so a domain-fronted request (SNI of a
+  public site, `Host` of a locked one) gets the login page as well.
+- **Deploys keep the lock.** `zipgo deploy` never removes or overwrites a
+  site's `password` (or `basicAuth`): the mirror leaves the server's
+  `.zipgoconfig.json` alone, and a build that ships its own has the server's
+  lock merged back in. A build can't unlock a site or change its password —
+  `zipgo password` is the one way.
+- Child subdomains are separate sites: each needs its own password.
+
+See [`zipgo password`](#zipgo-password) for the commands.
+
 ---
 
 ## Deploying a Site
@@ -292,10 +348,12 @@ zipgo ls        # list sites deployed on the remote target
 zipgo info      # show a deployed site's remote path, size and mtime
 zipgo off       # switch a deployed site off (410 Gone, nested sites too)
 zipgo on        # switch it back on
+zipgo password  # put a site behind a login page, rotate or remove its password
 zipgo doctor    # check the local domains folder for broken sites
 zipgo enable    # install and start the systemd user service
 zipgo disable   # stop and remove the systemd user service
 zipgo status    # show service status
+zipgo version   # print the version
 zipgo help      # usage
 ```
 
@@ -318,6 +376,13 @@ zipgo deploy dist/ -d love-letters.game.gabvdl.xyz \
 this is the default, `--prune` is just a clearer name for it), `--no-delete`
 (keep them), `--include-subdomains` (let the mirror also delete nested
 trailing-dot subdomain folders; by default they're protected), `-n/--dry-run`.
+
+A deploy ships **files, never server state**: a site that is
+[switched off](#zipgo-off--zipgo-on) stays off and a
+[password-protected](#password-protected-sites) one stays locked. The mirror
+leaves such a site's `.zipgoconfig.json` alone, and a build that ships its own
+gets the switch and the lock merged back in (`🔒 password kept: the site stays
+locked` in the output).
 
 A `--dry-run` **previews exactly what would change and touches nothing** — it
 runs the same rsync with `--itemize-changes` and prints a per-host summary of
@@ -409,7 +474,9 @@ Each site is reported the way the server routes it — `type` is `static`, `spa`
 is `false` for a site that is [switched off](#zipgo-off--zipgo-on) — by its own
 `"enable": false`, or through a parent's, in which case `offBy` names that
 parent — `protected` is `true`
-for a site behind `basicAuth` (the hashes themselves are never exposed), and an
+for a locked site — `password` is `true` when the lock is the login page, with
+its `passwordTitle` and `sessionDays`, otherwise it is `basicAuth` (the hashes
+themselves are never exposed) — and an
 unreadable
 `.zipgoconfig.json` shows up as `configError` instead of being silently ignored. `sizeBytes`/`files` count a
 site's **own** content: nested subdomain folders are sites of their own and are
@@ -478,6 +545,40 @@ live, and both refuse to rewrite a `.zipgoconfig.json` the server itself would
 reject — fix that one by hand first. (`zipgo enable`/`disable` are something
 else: they install and remove the systemd service.)
 
+### `zipgo password`
+
+Puts a site behind the [login page](#password-protected-sites), changes its
+password, takes it off. It edits the `password` block of the site's
+`.zipgoconfig.json` on the deploy target, over SSH — the target resolves like
+`zipgo deploy`'s (`--ssh`, then the project's `package.json` `zipgo.target`,
+then `.zipgo.json`) — or in a local domains folder with `--dir`. Every other key
+of the file is kept. The password is hashed on your machine; only the bcrypt
+hash travels.
+
+```bash
+zipgo password set ballance.game.example.com --title "Ballance"
+#   New password for ballance.game.example.com: ••••••••
+#   Again: ••••••••
+# 🔒  ballance.game.example.com is now password-protected
+#    login page: "Ballance" · sessions: 7 days, renewed while in use
+#    deploy into it as usual — the lock is kept:  zipgo deploy <dir> -d ballance.game.example.com
+
+zipgo password set <host>                    # change it (alias: rotate) — logs everyone out
+echo -n "$PW" | zipgo password set <host> --stdin   # from a script or a secret store
+zipgo password set <host> --generate         # make one up, print it once
+zipgo password set <host> --keep-password --title "Ballance v2" --days 30
+                                             # page/session settings only, sessions survive
+zipgo password status                        # every locked site on the target
+zipgo password status <host> [--json]        # one site (never the hash)
+zipgo password remove <host> [--yes]         # make it public again
+zipgo password hash [--stdin]                # just print a bcrypt hash
+```
+
+`set` creates the site folder when it doesn't exist yet, so a site can be locked
+**before its first deploy** — it is never public, not even for a second. The
+server hot-reloads: a new password takes effect, and old sessions die, within a
+second.
+
 ### `zipgo doctor`
 
 Answers "why isn't my site serving?" without reading Caddy's logs. It checks the
@@ -503,6 +604,11 @@ a folder passed as an argument) and reports, per host:
 | A `basicAuth` password that isn't a bcrypt hash (a plaintext locks everyone out) | error |
 | A `basicAuth` entry with an empty username | error |
 | An empty `basicAuth` block — the site is served with no password at all | warning |
+| A `password` hash that is missing or not a bcrypt hash — nobody can log in | error |
+| A `password` that isn't an object, or an unknown key inside it | error / warning |
+| `sessionDays` outside 1–400 (browsers cap cookies at 400 days) | warning |
+| `password` and `basicAuth` both set — two prompts | warning |
+| `allowHttp` on a password site — ignored, it is HTTPS-only | warning |
 | `redirect` on a folder that still has an `index.html` (never served) | warning |
 | A `404.html` in an SPA, `rewrite` or `redirect` site — it is never served | warning |
 | `redirectStatus` without a `redirect` target | warning |
