@@ -20,6 +20,10 @@ import (
 	"zipgo/internal/sites"
 )
 
+// remoteSpec is the rsync destination for a folder on host; tests point it at a
+// plain local path.
+var remoteSpec = func(host, dir string) string { return host + ":" + dir }
+
 // runRemote runs a shell script on host over ssh, feeding it stdin, and returns
 // its stdout. It is a variable so tests can run the very same scripts against a
 // local folder with `sh -c` instead of a real SSH hop.
@@ -164,15 +168,37 @@ func inspect(tgt Target, host string, mkdir, nested bool) (siteState, error) {
 	return parseState(tgt.BaseDir, out)
 }
 
+// WriteConfig is writeConfig for other packages (`zipgo password`).
+func WriteConfig(tgt Target, dir string, content []byte) error { return writeConfig(tgt, dir, content) }
+
+// ReadConfig returns the raw .zipgoconfig.json of host's folder on the target,
+// and whether the file exists. A failed SSH round trip is an error, never "no
+// file" — the caller would read that as "not locked".
+func ReadConfig(tgt Target, host string) ([]byte, bool, error) {
+	st, err := inspect(tgt, host, false, false)
+	if err != nil {
+		return nil, false, err
+	}
+	return st.Self.Config, st.Self.Config != nil, nil
+}
+
+// RunRemote runs a script on the target host and returns its stdout.
+func RunRemote(host, script string) (string, error) { return runRemote(host, script, nil) }
+
+// Quote wraps s for safe interpolation into a remote /bin/sh command line.
+func Quote(s string) string { return shQuote(s) }
+
 // writeConfig replaces dir's .zipgoconfig.json with content, or removes it when
-// content is nil. The new file is written next to the old one and renamed over
-// it, so the server's watcher never reloads a half-written config (a malformed
-// one aborts the whole reload).
+// content is nil, creating dir if needed (a site can be locked before its first
+// deploy). The new file is written in the domains root — the same filesystem,
+// but outside every site, so the half-written file (a password hash, maybe) is
+// never served — and renamed over the old one, so the server's watcher never
+// reloads a half-written config (a malformed one aborts the whole reload).
 func writeConfig(tgt Target, dir string, content []byte) error {
 	file := shQuote(path.Join(dir, sites.ConfigFileName))
 	script := "rm -f " + file
 	if content != nil {
-		script = `t=$(mktemp ` + shQuote(path.Join(dir, ".zipgoconfig.XXXXXX")) + `) || exit 1; ` +
+		script = `mkdir -p ` + shQuote(dir) + ` && t=$(mktemp ` + shQuote(path.Join(tgt.BaseDir, ".zipgo-tmp.XXXXXX")) + `) || exit 1; ` +
 			`if cat > "$t" && chmod 644 "$t" && mv -f "$t" ` + file + `; then exit 0; fi; rm -f "$t"; exit 1`
 	}
 	if _, err := runRemote(tgt.Host, script, content); err != nil {
