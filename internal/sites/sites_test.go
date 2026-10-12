@@ -158,6 +158,42 @@ func TestDiscoverReadsConfig(t *testing.T) {
 	}
 }
 
+// "enable": false switches off the site *and* its whole subtree; siblings and
+// the parent stay on, and an explicit true cannot revive a child of a disabled
+// site.
+func TestDiscoverDisabledCascades(t *testing.T) {
+	domain := filepath.Join(t.TempDir(), "example.com")
+	for _, d := range []string{"app./pb.", "app./demo./deep.", "other."} {
+		if err := os.MkdirAll(filepath.Join(domain, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(domain, "app."), `{"enable": false}`)
+	write(t, filepath.Join(domain, "app.", "demo."), `{"enable": true}`)
+
+	found, err := Discover(domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"example.com":               false,
+		"app.example.com":           true,
+		"pb.app.example.com":        true,
+		"demo.app.example.com":      true,
+		"deep.demo.app.example.com": true,
+		"other.example.com":         false,
+	}
+	if len(found) != len(want) {
+		t.Fatalf("discovered %d sites, want %d", len(found), len(want))
+	}
+	for _, s := range found {
+		host := s.Host("example.com")
+		if s.Disabled != want[host] {
+			t.Errorf("%s: Disabled = %v, want %v", host, s.Disabled, want[host])
+		}
+	}
+}
+
 func write(t *testing.T, dir, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, ConfigFileName), []byte(body), 0o644); err != nil {

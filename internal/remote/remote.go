@@ -1,6 +1,7 @@
 // Package remote implements the read-only `zipgo ls` and `zipgo info`
 // subcommands: a thin SSH client for inspecting which sites are deployed under a
 // remote zipgo domains folder, run against the default target from .zipgo.json.
+// (Switching a site off and on — the one write — lives in internal/deploy.)
 package remote
 
 import (
@@ -36,9 +37,13 @@ type Site struct {
 	// sent with; both set only when Type is "redirect".
 	Redirect       string `json:"redirect,omitempty"`
 	RedirectStatus int    `json:"redirectStatus,omitempty"`
-	// Enabled is false when .zipgoconfig.json sets "enable": false — the site is
-	// deployed but deliberately not served.
+	// Enabled is false when the site is switched off — its .zipgoconfig.json, or
+	// a parent site's, sets "enable": false — so it answers 410 Gone.
 	Enabled bool `json:"enabled"`
+	// OffBy is the parent site that switches this one off through the cascade
+	// (a parent's "enable": false takes its nested subdomains down with it).
+	// Empty when the site is on, or off by its own config.
+	OffBy string `json:"offBy,omitempty"`
 	// Protected is true when .zipgoconfig.json sets "basicAuth" — the site is
 	// served, but only to a caller with credentials. The hashes themselves are
 	// deliberately not exposed here.
@@ -50,6 +55,8 @@ type Site struct {
 	// ConfigError reports an unreadable .zipgoconfig.json — the site's own
 	// folder exists but the server will refuse to build a config from it.
 	ConfigError string `json:"configError,omitempty"`
+
+	ownOff bool // its own config says "enable": false (cascade input)
 }
 
 // Entry is one file or folder inside a site, emitted by `zipgo ls <host> --json`.
@@ -172,6 +179,7 @@ func parseSites(want []hostDir, out string) []Site {
 			s.ConfigError = err.Error()
 		} else {
 			s.Enabled = cfg.Enabled()
+			s.ownOff = !cfg.Enabled()
 			s.Protected = cfg.Protected()
 			if cfg.Rewrite != "" {
 				s.Type = typeProxy
@@ -199,6 +207,79 @@ func parseSites(want []hostDir, out string) []Site {
 		list = append(list, s)
 	}
 	return list
+}
+
+// cascade applies the parent → nested switch the server applies: a site under a
+// parent that is off by its own config is off too, through the nearest such
+// parent. Folder nesting (not host suffixes) decides who is a parent, as in
+// sites.Discover.
+func cascade(list []Site) {
+	for i := range list {
+		if list[i].ownOff {
+			continue
+		}
+		by, depth := "", -1
+		for _, p := range list {
+			if p.ownOff && strings.HasPrefix(list[i].Path, p.Path+"/") && len(p.Path) > depth {
+				by, depth = p.Host, len(p.Path)
+			}
+		}
+		if by != "" {
+			list[i].Enabled = false
+			list[i].OffBy = by
+		}
+	}
+}
+
+// configScript prints "dir<TAB>base64 config" for each folder — the light
+// read `zipgo ls` needs to mark switched-off sites, without statScript's
+// per-folder size walk.
+func configScript(dirs []string) string {
+	var b strings.Builder
+	b.WriteString("for d in")
+	for _, d := range dirs {
+		b.WriteString(" " + quote(d))
+	}
+	b.WriteString("; do\n")
+	b.WriteString("  cf=; [ -f \"$d/.zipgoconfig.json\" ] && cf=$(base64 \"$d/.zipgoconfig.json\" 2>/dev/null | tr -d '\\n')\n")
+	b.WriteString("  printf '%s\\t%s\\n' \"$d\" \"$cf\"\n")
+	b.WriteString("done\n")
+	return b.String()
+}
+
+// parseSwitches turns configScript's output into on/off records for found, with
+// the cascade applied. A folder with an unreadable config counts as on (the
+// server refuses to load it at all; `info` reports that).
+func parseSwitches(found []hostDir, out string) []Site {
+	cfgs := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.SplitN(strings.TrimRight(line, "\r"), "\t", 2)
+		if len(f) == 2 {
+			cfgs[f[0]] = f[1]
+		}
+	}
+	list := make([]Site, len(found))
+	for i, hd := range found {
+		list[i] = Site{Host: hd.host, Path: hd.dir, Enabled: true}
+		if cfg, err := decodeConfig(cfgs[hd.dir]); err == nil {
+			list[i].Enabled = cfg.Enabled()
+			list[i].ownOff = !cfg.Enabled()
+		}
+	}
+	cascade(list)
+	return list
+}
+
+// offNote is the suffix `zipgo ls` prints after a switched-off site.
+func offNote(s Site) string {
+	switch {
+	case s.Enabled:
+		return ""
+	case s.OffBy != "":
+		return "  ⏸ off through " + s.OffBy
+	default:
+		return "  ⏸ off"
+	}
 }
 
 // decodeConfig decodes a base64 .zipgoconfig.json as the server reads it. An
@@ -240,7 +321,9 @@ func stat(target deploy.Target, want []hostDir) ([]Site, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inspecting %s: %w", target.Host, err)
 	}
-	return parseSites(want, out), nil
+	list := parseSites(want, out)
+	cascade(list)
+	return list, nil
 }
 
 // Sites returns a record for every site deployed under the target.
@@ -252,17 +335,26 @@ func Sites(target deploy.Target) ([]Site, error) {
 	return stat(target, found)
 }
 
-// SiteFor returns the record for a single host, deployed or not.
+// SiteFor returns the record for a single host, deployed or not. Its parent
+// sites are read along with it, so a site switched off by a parent's
+// "enable": false is reported as off.
 func SiteFor(target deploy.Target, host string) (Site, error) {
 	remoteDir, err := deploy.RemoteDir(target.BaseDir, host)
 	if err != nil {
 		return Site{}, err
 	}
-	list, err := stat(target, []hostDir{{host: host, dir: remoteDir}})
+	var want []hostDir
+	for _, d := range deploy.ParentDirs(target.BaseDir, remoteDir) {
+		if h, ok := deploy.HostFromRemote(target.BaseDir, d); ok {
+			want = append(want, hostDir{host: h, dir: d})
+		}
+	}
+	want = append(want, hostDir{host: host, dir: remoteDir})
+	list, err := stat(target, want)
 	if err != nil {
 		return Site{}, err
 	}
-	return list[0], nil
+	return list[len(list)-1], nil
 }
 
 // List prints the sites deployed under the target. With an empty host it lists
@@ -309,16 +401,25 @@ func List(target deploy.Target, host string, asJSON bool) error {
 		return nil
 	}
 
+	dirs := make([]string, len(found))
+	for i, hd := range found {
+		dirs[i] = hd.dir
+	}
+	out, err := runSSH(target, configScript(dirs))
+	if err != nil {
+		return fmt.Errorf("reading site configs on %s: %w", target.Host, err)
+	}
+
 	// Group by apex (the last two labels) for readable output.
 	fmt.Printf("📁  %s:%s\n\n", target.Host, target.BaseDir)
 	var apex string
-	for _, hd := range found {
-		a := apexOf(hd.host)
+	for _, s := range parseSwitches(found, out) {
+		a := apexOf(s.Host)
 		if a != apex {
 			apex = a
 			fmt.Printf("%s\n", apex)
 		}
-		fmt.Printf("   https://%s\n", hd.host)
+		fmt.Printf("   https://%s%s\n", s.Host, offNote(s))
 	}
 	return nil
 }
@@ -348,8 +449,11 @@ func Info(target deploy.Target, host string, asJSON bool) error {
 	if s.Type == typeRedirect {
 		kind = fmt.Sprintf("%s → %s (%d)", typeRedirect, s.Redirect, s.RedirectStatus)
 	}
-	if !s.Enabled {
-		kind += " (disabled: enable=false)"
+	switch {
+	case s.OffBy != "":
+		kind += " — ⏸ off through " + s.OffBy + " (410 Gone)"
+	case !s.Enabled:
+		kind += " — ⏸ off (410 Gone)"
 	}
 	if s.Protected {
 		kind += " 🔒 basic-auth"

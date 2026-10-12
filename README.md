@@ -24,6 +24,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **SPA support** — auto-detected; all unknown paths fall back to `index.html`
 - **Custom 404 page** — drop a `404.html` in a static site's folder and it becomes the body of its 404s
 - **Password-protected sites** — `"basicAuth"` in a site's `.zipgoconfig.json` puts a staging subdomain behind HTTP basic auth
+- **Switch a site off** — `zipgo off <host>` takes a deployed site down (410 Gone, nested subdomains included) without deleting it; `zipgo on <host>` brings it back
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
 - **Systemd integration** — `zipgo enable` sets up a user service that starts on boot
 
@@ -132,8 +133,9 @@ hides it). All keys are optional:
 
 ```jsonc
 {
-  "enable": true,                  // false → don't serve this site, and omit it
-                                   //         from any parent's sub-domains-meta
+  "enable": true,                  // false → switch the site off: 410 Gone for
+                                   //   it and every subdomain nested under it
+                                   //   (`zipgo off <host>` writes this for you)
   "rewrite": "localhost:8080",     // reverse-proxy to this upstream instead of
                                    //   serving files (host:port, or a URL with
                                    //   scheme: "https://api.example.com")
@@ -158,8 +160,15 @@ hides it). All keys are optional:
 }
 ```
 
-- **`enable: false`** removes the site entirely — no route, no TLS cert, and it
-  disappears from its parent's `/sub-domains-meta` listing.
+- **`enable: false`** switches the site off without deleting it: every request
+  gets a small **410 Gone** page (with `Cache-Control: no-store`, so nothing
+  lingers once it's back on), it keeps its TLS certificate so visitors see that
+  page rather than a certificate error, and it disappears from its parent's
+  `/sub-domains-meta` listing. It **cascades**: every subdomain nested under the
+  folder goes off with it (`app./pb./` is off when `app./` is), and an
+  `"enable": true` further down cannot override that. You rarely write it by
+  hand — [`zipgo off`](#zipgo-off--zipgo-on) does it over SSH and keeps the
+  file's other keys.
 - **`rewrite`** makes the site a reverse proxy: requests are forwarded to the
   given upstream rather than served from the folder (no `index.html` needed). A
   bare `host:port` dials plain HTTP; a `https://` URL proxies over TLS.
@@ -281,6 +290,8 @@ zipgo serve     # start the server (default when no command is given)
 zipgo deploy    # rsync a local dir to a remote zipgo host over SSH
 zipgo ls        # list sites deployed on the remote target
 zipgo info      # show a deployed site's remote path, size and mtime
+zipgo off       # switch a deployed site off (410 Gone, nested sites too)
+zipgo on        # switch it back on
 zipgo doctor    # check the local domains folder for broken sites
 zipgo enable    # install and start the systemd user service
 zipgo disable   # stop and remove the systemd user service
@@ -363,6 +374,12 @@ zipgo deploy -d www.dev.gabvdl.xyz # one host, its mapped folder, default target
 
 The fully-explicit `dist/ -d host --ssh …` form keeps working unchanged.
 
+A deploy never flips a site's [on/off switch](#zipgo-off--zipgo-on): deploying
+to a site that is off ships the files but leaves it answering 410, and says so
+(`⏸ stays off … — zipgo on <host> to publish it`). Its remote
+`.zipgoconfig.json` is kept out of the mirror, and if the build ships one of its
+own, that one is merged in with `"enable": false` kept.
+
 ### `zipgo ls` / `zipgo info`
 
 Read-only inspection of what's deployed under the remote target (resolved from
@@ -389,7 +406,9 @@ Each site is reported the way the server routes it — `type` is `static`, `spa`
 (an `index.html` next to an `assets/`, `static/`, `_next/` or `dist/` folder),
 `proxy` (a `.zipgoconfig.json` `rewrite`) or `redirect` (a `.zipgoconfig.json`
 `redirect`, reported with its `redirect` target and `redirectStatus`), `enabled`
-is `false` for a site turned off with `"enable": false`, `protected` is `true`
+is `false` for a site that is [switched off](#zipgo-off--zipgo-on) — by its own
+`"enable": false`, or through a parent's, in which case `offBy` names that
+parent — `protected` is `true`
 for a site behind `basicAuth` (the hashes themselves are never exposed), and an
 unreadable
 `.zipgoconfig.json` shows up as `configError` instead of being silently ignored. `sizeBytes`/`files` count a
@@ -417,6 +436,47 @@ love-letters.game.gabvdl.xyz    static
   "modified": "2026-07-14T14:13:31Z"
 }
 ```
+
+### `zipgo off` / `zipgo on`
+
+Take a deployed site down without deleting it, and bring it back:
+
+```console
+$ zipgo off deck-tinder.dev.gabvdl.xyz
+⏸  deck-tinder.dev.gabvdl.xyz is now off — it answers 410 Gone
+   and 1 nested site with it: pb.deck-tinder.dev.gabvdl.xyz
+
+$ zipgo on deck-tinder.dev.gabvdl.xyz
+▶  deck-tinder.dev.gabvdl.xyz is back on
+```
+
+`off` writes `"enable": false` into the site's remote `.zipgoconfig.json`
+(creating the file if needed, keeping every other key and their order); `on`
+removes it again — and deletes the file if that was all it held, so a site
+that had no config gets none back. The new file is renamed into place, so the
+server's watcher never reloads a half-written one. Nothing restarts: the server
+hot-reloads within a second.
+
+While a site is off:
+
+- every request to it answers a **410 Gone** page; it keeps its certificate;
+- **its nested subdomains are off too** — `off` lists the ones it takes down;
+- `zipgo ls` marks it `⏸ off` (or `⏸ off through <parent>`), `zipgo info`
+  shows it in `Kind`, and `ls --json` reports `"enabled": false`;
+- a `zipgo deploy` to it ships the files but **keeps it off** — `zipgo on` is
+  the one way back.
+
+```bash
+zipgo off a.example.com b.example.com   # several at once
+zipgo off a.example.com -n              # dry run: say what would change
+zipgo on a.example.com --ssh me@box:/srv/domains
+```
+
+The target comes from `.zipgo.json`, like `ls`/`info`. `on` for a site whose
+**parent** is off says so (`off through <parent>`) instead of pretending it is
+live, and both refuse to rewrite a `.zipgoconfig.json` the server itself would
+reject — fix that one by hand first. (`zipgo enable`/`disable` are something
+else: they install and remove the systemd service.)
 
 ### `zipgo doctor`
 
@@ -446,6 +506,7 @@ a folder passed as an argument) and reports, per host:
 | `redirect` on a folder that still has an `index.html` (never served) | warning |
 | A `404.html` in an SPA, `rewrite` or `redirect` site — it is never served | warning |
 | `redirectStatus` without a `redirect` target | warning |
+| `"enable": true` under a parent that is off — the cascade wins, it does nothing | warning |
 | Two folders claiming the same host (`a.b.` and `b./a.`) | error |
 
 ```bash

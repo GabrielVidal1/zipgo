@@ -195,14 +195,71 @@ func hasIndex(s sites.Site) bool {
 	return false
 }
 
-// served reports whether a site should produce a route at all. A site is served
-// when its .zipgoconfig.json doesn't disable it (enable:false) and it has
-// something to serve — an index.html (file mode), a rewrite upstream
-// (reverse-proxy mode) or a redirect target. Disabled sites are also excluded
-// from sub-domains-meta.
+// hasContent reports whether a site has something to serve — an index.html
+// (file mode), a rewrite upstream (reverse-proxy mode) or a redirect target. A
+// folder without any of those only exists to hold subdomains.
+func hasContent(s sites.Site) bool {
+	return s.Config.Redirect != "" || s.Config.Rewrite != "" || hasIndex(s)
+}
+
+// served reports whether a site gets its normal route: it is not switched off
+// (by its own "enable": false or a parent's — see sites.Site.Disabled) and it
+// has something to serve. Disabled sites are also excluded from
+// sub-domains-meta.
 func served(s sites.Site) bool {
-	return s.Config.Enabled() &&
-		(s.Config.Redirect != "" || s.Config.Rewrite != "" || hasIndex(s))
+	return !s.Off() && hasContent(s)
+}
+
+// Gone reports whether a site answers 410 Gone instead: it is switched off and
+// was live — it has content, or it is the very folder whose config says
+// "enable": false (the site someone turned off answers for itself even when it
+// is only a holder of subdomains). A content-less folder that is merely under a
+// disabled parent stays unrouted, as it was while on.
+func Gone(s sites.Site) bool {
+	return s.Off() && (hasContent(s) || !s.Config.Enabled())
+}
+
+// GoneBody is the page a disabled site answers every request with, under a 410
+// status — the site existed and was deliberately taken down, which a crawler
+// reads as "drop it" where a 404 would mean "maybe later".
+const GoneBody = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>410 Gone</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         font: 16px/1.5 system-ui, sans-serif; text-align: center; }
+  h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
+  p { margin: 0; opacity: .7; }
+</style>
+</head>
+<body>
+<main>
+<h1>This site is no longer available</h1>
+<p>410 Gone</p>
+</main>
+</body>
+</html>
+`
+
+// goneHandler builds the subroute a disabled site is served with: the usual
+// security headers, then a static 410 page. Cache-Control: no-store keeps
+// browsers from holding on to the 410 once the site is switched back on.
+func goneHandler() obj {
+	headers := securityHeaders("", map[string]string{"Cache-Control": "no-store"})
+	return obj{"handler": "subroute", "routes": arr{
+		obj{"handle": arr{headers}},
+		obj{"handle": arr{obj{
+			"handler":     "static_response",
+			"status_code": "410",
+			"headers":     obj{"Content-Type": arr{"text/html; charset=utf-8"}},
+			"body":        GoneBody,
+		}}},
+	}}
 }
 
 // authorizedOrigins reads the site's index.html and returns the value of its
@@ -225,7 +282,7 @@ func authorizedOrigins(s sites.Site) string {
 // hasWww reports whether the domain has a www subdomain site.
 func hasWww(all []sites.Site) bool {
 	for _, s := range all {
-		if len(s.Labels) == 1 && s.Labels[0] == "www" && s.Config.Enabled() && hasIndex(s) {
+		if len(s.Labels) == 1 && s.Labels[0] == "www" && !s.Off() && hasIndex(s) {
 			return true
 		}
 	}
@@ -246,7 +303,7 @@ func childMeta(parent sites.Site, all []sites.Site) map[string]meta.Meta {
 		if !labelsEqual(c.Labels[1:], parent.Labels) {
 			continue
 		}
-		if !c.Config.Enabled() || !hasIndex(c) {
+		if c.Off() || !hasIndex(c) {
 			continue
 		}
 		m, err := meta.Extract(filepath.Join(c.Path, "index.html"))
@@ -323,6 +380,23 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 		}
 
 		for _, s := range ds.Sites {
+			if Gone(s) {
+				// A switched-off site keeps its host (and its certificate) so
+				// visitors get a clear 410 rather than a TLS error.
+				r := obj{
+					"match":    arr{obj{"host": arr{s.Host(ds.Domain)}}},
+					"handle":   arr{goneHandler()},
+					"terminal": true,
+				}
+				routes = append(routes, r)
+				if s.Config.HTTPAllowed() {
+					httpRoutes = append(httpRoutes, r)
+				}
+				if !s.IsApex() {
+					subjects = append(subjects, s.Host(ds.Domain))
+				}
+				continue
+			}
 			if !served(s) {
 				continue
 			}
@@ -650,10 +724,18 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr, logFormat stri
 		}
 
 		for _, s := range sorted {
+			pathPrefix := s.LocalhostPath(ds.Domain)
+			if Gone(s) {
+				routes = append(routes, obj{
+					"match":    arr{obj{"path": arr{pathPrefix, pathPrefix + "/*"}}},
+					"handle":   arr{goneHandler()},
+					"terminal": true,
+				})
+				continue
+			}
 			if !served(s) {
 				continue
 			}
-			pathPrefix := s.LocalhostPath(ds.Domain)
 
 			// Serve <prefix>/sub-domains-meta for any site with child
 			// subdomains, before the site's own routes so the path match wins.

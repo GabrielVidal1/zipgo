@@ -577,3 +577,31 @@ func TestCheckNotFoundPage(t *testing.T) {
 		})
 	}
 }
+
+// A parent's "enable": false switches off its nested subdomains too: they are
+// counted as disabled (not checked for content), and an explicit "enable": true
+// in one of them is called out as having no effect.
+func TestCheckDisabledCascades(t *testing.T) {
+	root := tree(t, map[string]string{
+		"example.com/index.html":                   "<html></html>",
+		"example.com/app./.zipgoconfig.json":       `{"enable": false}`,
+		"example.com/app./pb./style.css":           "body{}", // no index.html: not checked
+		"example.com/app./demo./.zipgoconfig.json": `{"enable": true}`,
+		"example.com/app./demo./index.html":        "<html></html>",
+	})
+	rep, err := Check(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Sites != 1 || rep.Disabled != 3 {
+		t.Errorf("Sites = %d, Disabled = %d, want 1 and 3", rep.Sites, rep.Disabled)
+	}
+	if len(rep.Findings) != 1 {
+		t.Fatalf("want exactly the no-effect warning, got %+v", rep.Findings)
+	}
+	f := rep.Findings[0]
+	if f.Level != Warn || f.Host != "demo.app.example.com" ||
+		!strings.Contains(f.Msg, "has no effect: app.example.com is switched off") {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+}

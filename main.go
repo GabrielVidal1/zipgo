@@ -78,14 +78,38 @@ Inspect what is deployed under the remote zipgo domains folder (the target is
 read from .zipgo.json unless --ssh/--target is given).
 
   zipgo ls                 list every deployed site, grouped by domain
+                           (sites switched off with 'zipgo off' are marked)
   zipgo ls <host>          list the contents of one site's remote folder
   zipgo info <host>        show a site's remote path, kind, size, files, mtime
   --json                   machine-readable output:
                              ls          → array of sites (host, path, type,
-                                           proxy, enabled, sizeBytes, files,
-                                           modified)
+                                           proxy, enabled, offBy, sizeBytes,
+                                           files, modified)
                              ls <host>   → array of files in the site's folder
                              info <host> → that one site as an object
+`
+
+const switchUsage = `Usage: zipgo off <host>... [-n] [--ssh user@host:/base/path]
+       zipgo on  <host>... [-n] [--ssh user@host:/base/path]
+
+Switch a deployed site off without deleting it, or bring it back. Off writes
+"enable": false into the site's remote .zipgoconfig.json (its other keys are
+kept); on removes it again. The server hot-reloads, nothing restarts.
+
+A site that is off answers every request with a 410 Gone page (it keeps its
+certificate), drops out of its parent's sub-domains-meta, and takes its nested
+subdomains with it: turning off app.example.com also turns off
+pb.app.example.com. A later 'zipgo deploy' to it ships the files but keeps it
+off — 'zipgo on' is the only way back.
+
+  <host>...      one or more hosts, e.g. love-letters.game.gabvdl.xyz
+  -n, --dry-run  say what would change, touch nothing
+      --ssh, --target  remote destination (or a name from .zipgo.json
+                 "targets"); default: the .zipgo.json target
+
+Examples:
+  zipgo off old-demo.dev.gabvdl.xyz
+  zipgo on  old-demo.dev.gabvdl.xyz
 `
 
 const doctorUsage = `Usage: zipgo doctor [domains-folder] [--strict]
@@ -164,6 +188,20 @@ func main() {
 			}
 		}
 		return
+	case "off", "on":
+		opts, err := deploy.ParseSwitchArgs(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, switchUsage)
+			os.Exit(2)
+		}
+		target, err := resolveTarget(opts.SSH)
+		if err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		if err := deploy.Switch(os.Stdout, target, opts, sub == "on"); err != nil {
+			log.Fatalf("❌  %v\n", err)
+		}
+		return
 	case "doctor":
 		dir, strict, err := parseDoctorArgs(os.Args[2:])
 		if err != nil {
@@ -190,6 +228,8 @@ func main() {
 		fmt.Println("  deploy   rsync a local dir to a remote zipgo host over SSH")
 		fmt.Println("  ls       list sites deployed on the remote target")
 		fmt.Println("  info     show a deployed site's remote path, size and mtime")
+		fmt.Println("  off      switch a deployed site off (410 Gone, nested sites too)")
+		fmt.Println("  on       switch a site that is off back on")
 		fmt.Println("  doctor   check the local domains folder for broken sites")
 		fmt.Println("  enable   Install and start the systemd user service")
 		fmt.Println("  disable  Stop and remove the systemd user service")
@@ -198,6 +238,8 @@ func main() {
 		fmt.Print(deployUsage)
 		fmt.Println()
 		fmt.Print(manageUsage)
+		fmt.Println()
+		fmt.Print(switchUsage)
 		fmt.Println()
 		fmt.Print(doctorUsage)
 		return
@@ -276,7 +318,7 @@ func main() {
 		fmt.Printf("📁  Domains: %d  Sites: %d\n\n", len(domainSites), totalSites)
 		for _, ds := range domainSites {
 			for _, s := range ds.Sites {
-				if !s.Config.Enabled() {
+				if s.Off() && !builder.Gone(s) {
 					continue
 				}
 				kind := siteKind(s)
@@ -289,7 +331,7 @@ func main() {
 		for _, ds := range domainSites {
 			fmt.Printf("🌐  Domain : %s (%d sites)\n", ds.Domain, len(ds.Sites))
 			for _, s := range ds.Sites {
-				if !s.Config.Enabled() {
+				if s.Off() && !builder.Gone(s) {
 					continue
 				}
 				kind := siteKind(s)
@@ -334,10 +376,13 @@ func main() {
 }
 
 // siteKind is the padded label printed next to a site in the startup listing,
-// mirroring how the builder routes it: a redirect target wins over a rewrite
-// upstream, which wins over the file server (SPA or plain static).
+// mirroring how the builder routes it: a switched-off site answers 410 whatever
+// it holds, then a redirect target wins over a rewrite upstream, which wins over
+// the file server (SPA or plain static).
 func siteKind(s sites.Site) string {
 	switch {
+	case s.Off():
+		return "off   "
 	case s.Config.Redirect != "":
 		return "redir "
 	case s.Config.Rewrite != "":

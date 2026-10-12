@@ -20,9 +20,11 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
+	"zipgo/internal/sites"
 	"zipgo/internal/zipconfig"
 )
 
@@ -245,36 +247,88 @@ func Run(o Options) error {
 
 		dest := tgt.Host + ":" + remoteDir + "/"
 
+		// Read the site's on/off switch — creating the folder tree on the way
+		// (trailing dots and all), except in a dry run — so a deploy never
+		// flips it: a site that is off stays off, whatever the build ships.
+		st, err := inspect(tgt, host, !o.DryRun, false)
+		if err != nil {
+			return err
+		}
+		jo, keepOff := o, st.Self.ownOff()
+		if keepOff {
+			// Leave the remote config alone (an excluded file is also safe
+			// from --delete); the build's own config, if any, is merged in
+			// below with the switch kept off.
+			jo.Excludes = append(append([]string{}, o.Excludes...), "/"+sites.ConfigFileName)
+		}
+
 		if o.DryRun {
 			// Summarise exactly what would change before touching anything:
 			// run rsync with --itemize-changes, capture its output and bucket
 			// each line into added/replaced/deleted. No remote mkdir — a
 			// missing destination just makes every path show up as "added",
 			// which is the right first-deploy summary.
-			out, err := exec.Command("rsync", rsyncArgs(o, src, dest, true)...).Output()
+			out, err := exec.Command("rsync", rsyncArgs(jo, src, dest, true)...).Output()
 			if err != nil {
 				return fmt.Errorf("rsync dry-run to %q: %w", host, cmdErr(err))
 			}
 			WriteSummary(os.Stdout, host, ParseItemized(string(out)))
+			printKeptOff(host, st, keepOff, "would stay")
 			continue
 		}
 
-		// Recursively create the subdomain folder tree (trailing dots and
-		// all). Quote the path so the remote shell keeps it intact.
-		mkdir := exec.Command("ssh", tgt.Host, "mkdir -p '"+remoteDir+"'")
-		mkdir.Stdout, mkdir.Stderr = os.Stdout, os.Stderr
-		if err := mkdir.Run(); err != nil {
-			return fmt.Errorf("creating remote dir %q: %w", remoteDir, err)
-		}
-
-		rsync := exec.Command("rsync", rsyncArgs(o, src, dest, false)...)
+		rsync := exec.Command("rsync", rsyncArgs(jo, src, dest, false)...)
 		rsync.Stdout, rsync.Stderr = os.Stdout, os.Stderr
 		if err := rsync.Run(); err != nil {
 			return fmt.Errorf("rsync to %q: %w", host, err)
 		}
-		fmt.Printf("   ✓ https://%s\n", host)
+		if keepOff {
+			if err := mergeKeptOff(tgt, remoteDir, job.Src); err != nil {
+				return fmt.Errorf("%s: %w", host, err)
+			}
+		}
+		if !printKeptOff(host, st, keepOff, "stays") {
+			fmt.Printf("   ✓ https://%s\n", host)
+		}
 	}
 	return nil
+}
+
+// printKeptOff tells the user a deploy did not put the host live because it is
+// switched off — by itself (keepOff) or by a parent — and how to publish it.
+// verb is "stays" or, in a dry run, "would stay". It reports whether it printed.
+func printKeptOff(host string, st siteState, keepOff bool, verb string) bool {
+	switch parents := st.offBy(); {
+	case keepOff:
+		fmt.Printf("   ⏸  %s off (410 Gone) — `zipgo on %s` to publish it\n", verb, host)
+	case len(parents) > 0:
+		fmt.Printf("   ⏸  %s off through %s — `zipgo on %s` to publish it\n",
+			verb, strings.Join(parents, ", "), parents[len(parents)-1])
+	default:
+		return false
+	}
+	return true
+}
+
+// mergeKeptOff publishes the build's own .zipgoconfig.json (rsync skipped it)
+// with the site still switched off, so its other keys — headers, basicAuth —
+// land as they would on a live deploy. Without one, the remote config stays.
+func mergeKeptOff(tgt Target, remoteDir, src string) error {
+	local, err := os.ReadFile(filepath.Join(src, sites.ConfigFileName))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	out, changed, err := SetEnable(local, false)
+	if err != nil {
+		return fmt.Errorf("%s in the build: %w", sites.ConfigFileName, err)
+	}
+	if !changed {
+		out = local
+	}
+	return writeConfig(tgt, remoteDir, out)
 }
 
 // rsyncArgs builds the rsync argument list for one job. dryRun switches it into
