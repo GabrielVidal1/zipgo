@@ -299,6 +299,13 @@ zipgo deploy dist -d ballance.game.example.com                     # still locke
   asked for. It lasts `sessionDays` (default **7**) and is **renewed while in
   use**, so someone who keeps coming back never sees the page again.
   `/__zipgo/logout` ends it.
+- A **link can skip the page**: any URL with `?__zipgo_pwd=<password>`
+  (e.g. `https://ballance.game.example.com/?__zipgo_pwd=…` in a kiosk or a
+  Steam shortcut) is checked like the form, with the same throttle; the right
+  password sets the session and `303`s to the same URL **without** the
+  parameter, so it doesn't linger in the address bar or a `Referer`. GET/HEAD
+  only; the site never sees the parameter. Mind that a password in a link can
+  end up in browser history and proxy logs.
 - **Changing the password logs everyone out.** Sessions are signed with a key
   derived from a server secret (kept next to the certificates, in Caddy's data
   dir: it survives restarts), the host and the password hash — and every new
