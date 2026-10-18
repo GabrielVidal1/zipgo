@@ -391,3 +391,99 @@ func TestLoadKey(t *testing.T) {
 		t.Fatal("a truncated key file was accepted")
 	}
 }
+
+func unlockReq(target, ip string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, target, nil)
+	r.RemoteAddr = ip + ":40000"
+	return r
+}
+
+func TestLinkUnlock(t *testing.T) {
+	g, _ := newGate(t, "")
+
+	w := serve(g, unlockReq("/play?level=3&__zipgo_pwd="+password+"&tutorial=0", "203.0.113.20"))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("right password: status %d, want 303", w.Code)
+	}
+	if got := w.Header().Get("Location"); got != "/play?level=3&tutorial=0" {
+		t.Errorf("redirect to %q, want the URL without pwd", got)
+	}
+	c := sessionCookie(t, w)
+
+	// The clean URL then serves the site.
+	r := httptest.NewRequest(http.MethodGet, "/play?level=3&tutorial=0", nil)
+	r.AddCookie(c)
+	if w := serve(g, r); w.Code != http.StatusOK || w.Body.String() != "SECRET CONTENT" {
+		t.Fatalf("after the link: %d %q", w.Code, w.Body.String())
+	}
+
+	// With a session, the link just drops the param (no check, even if wrong).
+	r = httptest.NewRequest(http.MethodGet, "/?__zipgo_pwd=whatever", nil)
+	r.AddCookie(c)
+	if w := serve(g, r); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
+		t.Errorf("with a session: %d → %q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+func TestLinkUnlockWrongPassword(t *testing.T) {
+	g, _ := newGate(t, "")
+	for _, target := range []string{"/?__zipgo_pwd=nope", "/?__zipgo_pwd=", "/?__zipgo_pwd"} {
+		w := serve(g, unlockReq(target, "203.0.113.21"))
+		if w.Code != http.StatusUnauthorized || strings.Contains(w.Body.String(), "SECRET") {
+			t.Fatalf("%s: status %d", target, w.Code)
+		}
+		if len(w.Result().Cookies()) != 0 {
+			t.Errorf("%s: set a cookie", target)
+		}
+		if !strings.Contains(w.Body.String(), `value="/"`) {
+			t.Errorf("%s: the page's next keeps the password", target)
+		}
+	}
+	if !strings.Contains(serve(g, unlockReq("/?__zipgo_pwd=nope", "203.0.113.21")).Body.String(), "Wrong password.") {
+		t.Error("no error message")
+	}
+}
+
+func TestLinkUnlockIsThrottled(t *testing.T) {
+	g, _ := newGate(t, "")
+	for i := 0; i < maxFailsPerIP; i++ {
+		serve(g, unlockReq("/?__zipgo_pwd=nope", "203.0.113.22"))
+	}
+	w := serve(g, unlockReq("/?__zipgo_pwd="+password, "203.0.113.22"))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("after %d misses: status %d, want 429", maxFailsPerIP, w.Code)
+	}
+}
+
+func TestLinkUnlockOnlyOnGet(t *testing.T) {
+	g, _ := newGate(t, "")
+	r := httptest.NewRequest(http.MethodPost, "/?__zipgo_pwd="+password, nil)
+	if w := serve(g, r); w.Code != http.StatusUnauthorized || len(w.Result().Cookies()) != 0 {
+		t.Fatalf("POST with pwd: status %d", w.Code)
+	}
+}
+
+func TestLinkUnlockLocalhostPrefix(t *testing.T) {
+	g, _ := newGate(t, "/ballance.game.example.com")
+	w := serve(g, unlockReq("/ballance.game.example.com/x?__zipgo_pwd="+password, "203.0.113.23"))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/ballance.game.example.com/x" {
+		t.Fatalf("prefix: %d → %q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+func TestWithoutParam(t *testing.T) {
+	for raw, want := range map[string]string{
+		"/":                              "/",
+		"/?__zipgo_pwd=a":                "/",
+		"/a?x=1&__zipgo_pwd=a&y=2":       "/a?x=1&y=2",
+		"/a?__zipgo_pwd=a&__zipgo_pwd=b": "/a",
+		"/a?%5F_zipgo_pwd=a&q=%20":       "/a?q=%20",
+		"/a?__zipgo_pwdx=1&__zipgo_pwd":  "/a?__zipgo_pwdx=1",
+		"/a%20b?__zipgo_pwd=1&&z":        "/a%20b?z",
+	} {
+		u, _ := url.Parse(raw)
+		if got := withoutParam(u, UnlockParam); got != want {
+			t.Errorf("%s → %q, want %q", raw, got, want)
+		}
+	}
+}

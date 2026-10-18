@@ -9,6 +9,11 @@
 //	                        → a signed session cookie, 303 back to the page
 //	                          that was asked for
 //	<prefix>/__zipgo/logout → the cookie is cleared
+//	GET any path?__zipgo_pwd=<pw>
+//	                        → checked like the form; right: the session
+//	                          cookie and a 303 to the same URL without the
+//	                          param (a link that skips the page, e.g. a
+//	                          kiosk or a Steam shortcut); wrong: the page
 //
 // Sessions are stateless. A cookie is "<expiry>.<mac>", the MAC keyed by
 // HMAC(server key, host, password hash): the server key (Caddy's data dir) makes
@@ -30,6 +35,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,6 +58,12 @@ const (
 	LoginPath  = "/__zipgo/login"
 	LogoutPath = "/__zipgo/logout"
 )
+
+// UnlockParam is the query parameter that carries the password in a link that
+// skips the login page (/levels?__zipgo_pwd=…). The gate always consumes it:
+// it never reaches the site, and the redirect drops it from the address bar.
+// The double underscore keeps it out of any real site's way, as for LoginPath.
+const UnlockParam = "__zipgo_pwd"
 
 // Tunables. Variables rather than constants so tests can shrink them.
 var (
@@ -169,6 +181,11 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.
 		return nil
 	}
 
+	if pw, ok := unlockPassword(r); ok {
+		g.unlock(w, r, pw)
+		return nil
+	}
+
 	expiry, ok := g.session(r)
 	if !ok {
 		g.page(w, r, http.StatusUnauthorized, g.safeNext(r.URL.RequestURI()), "")
@@ -205,6 +222,66 @@ func (g *Gate) login(w http.ResponseWriter, r *http.Request) {
 			g.Host, ip, failWindow)
 	}
 	g.page(w, r, http.StatusUnauthorized, next, "Wrong password.")
+}
+
+// unlock answers a link carrying the password. An existing session needs no
+// check: the visitor just goes on to the clean URL.
+func (g *Gate) unlock(w http.ResponseWriter, r *http.Request, pw string) {
+	next := g.safeNext(withoutParam(r.URL, UnlockParam))
+	if _, ok := g.session(r); ok {
+		g.redirect(w, r, next)
+		return
+	}
+	ip := clientIP(r)
+	now := g.now()
+	if g.lim.blocked(ip, now) {
+		g.page(w, r, http.StatusTooManyRequests, next, "Too many attempts. Try again in a minute.")
+		return
+	}
+	if g.check(pw) {
+		log.Printf("🔓  %s: new session from %s (link)", g.Host, ip)
+		http.SetCookie(w, g.cookie())
+		g.redirect(w, r, next)
+		return
+	}
+	if g.lim.fail(ip, now) {
+		log.Printf("🚫  %s: too many wrong passwords (last from %s) — logins paused for up to %s",
+			g.Host, ip, failWindow)
+	}
+	g.page(w, r, http.StatusUnauthorized, next, "Wrong password.")
+}
+
+// unlockPassword is the password a GET or HEAD carries in UnlockParam.
+func unlockPassword(r *http.Request) (string, bool) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return "", false
+	}
+	q := r.URL.Query()
+	if !q.Has(UnlockParam) {
+		return "", false
+	}
+	return q.Get(UnlockParam), true
+}
+
+// withoutParam is u's request URI without any occurrence of the query
+// parameter key; the other parameters keep their order and spelling.
+func withoutParam(u *url.URL, key string) string {
+	var kept []string
+	for _, part := range strings.Split(u.RawQuery, "&") {
+		k, _, _ := strings.Cut(part, "=")
+		if dk, err := url.QueryUnescape(k); part == "" || (err == nil && dk == key) || k == key {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	out := u.EscapedPath()
+	if out == "" {
+		out = "/"
+	}
+	if len(kept) > 0 {
+		out += "?" + strings.Join(kept, "&")
+	}
+	return out
 }
 
 // check compares a password with the hash. bcrypt's comparison takes the same
