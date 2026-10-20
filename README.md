@@ -25,7 +25,8 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **Custom 404 page** — drop a `404.html` in a static site's folder and it becomes the body of its 404s
 - **Password-protected sites** — `zipgo password set <host>` puts a whole site behind a login page (one shared password, a session cookie); deploys keep the lock. `"basicAuth"` is there too for HTTP basic auth
 - **Switch a site off** — `zipgo off <host>` takes a deployed site down (410 Gone, nested subdomains included) without deleting it; `zipgo on <host>` brings it back
-- **Back-office** — `zipgo admin set admin.yourdomain.com` gives a domain a password-protected page, made for a phone, to switch any of its sites (sub and sub-sub domains included) off and on and to put a password on one. It edits the same `.zipgoconfig.json` files the CLI does — no state of its own
+- **Back-office** — `zipgo admin set admin.yourdomain.com` gives a domain a password-protected page, made for a phone, to switch any of its sites (sub and sub-sub domains included) off and on, flip their feature flags and put a password on one. It edits the same `.zipgoconfig.json` files the CLI does — no state of its own
+- **Feature flags** — a site declares switches for unfinished features; its code reads them from `/__zipgo/flags.json`, zipgo answers 404 on the paths of the ones that are off, and you flip them from the back-office or `zipgo flag` — no redeploy, and deploys never flip them back
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
 - **Systemd integration** — `zipgo enable` sets up a user service that starts on boot
 
@@ -165,7 +166,11 @@ hides it). All keys are optional:
   },                               //   (`zipgo password set` writes all this)
   "basicAuth": {                   // or HTTP basic auth
     "alice": "$2a$14$Zkx19XLiW…"   //   username → *bcrypt hash*, never a
-  }                                //   plaintext password
+  },                               //   plaintext password
+  "flags": {                       // feature flags, served at
+    "daily": true,                 //   /__zipgo/flags.json (see below)
+    "coop": {"on": false, "description": "Co-op levels", "paths": ["/coop"]}
+  }
 }
 ```
 
@@ -334,6 +339,53 @@ zipgo deploy dist -d ballance.game.example.com                     # still locke
 
 See [`zipgo password`](#zipgo-password) for the commands.
 
+### Feature flags
+
+Switches for features that aren't ready for everyone, flipped on the server
+without a redeploy:
+
+```jsonc
+// the site's .zipgoconfig.json — ship it in the build (Vite: public/)
+{
+  "flags": {
+    "coop":  {"on": false, "description": "Co-op levels"},
+    "arena": {"description": "The arena", "paths": ["/arena"]},
+    "daily": true
+  }
+}
+```
+
+```js
+// the site's code, at boot
+const { flags } = await fetch("/__zipgo/flags.json").then((r) => r.json());
+if (flags.coop) showCoopButton();
+```
+
+- A site with a `flags` block (even an empty one) serves
+  **`/__zipgo/flags.json`** → `{"flags": {"coop": false, "arena": false,
+  "daily": true}}`, `Cache-Control: no-store`, so a switch takes effect on the
+  next page load. Without the block, the path is the site's own (an SPA
+  answers it with `index.html`) — so code that reads flags should treat
+  anything but JSON as "every flag off" on a real host.
+- A flag is `true`/`false`, or an object: `on` (default **false** — a feature
+  is unreleased until someone flips it), a `description` the back-office shows,
+  and `paths`. While a flag is **off**, zipgo answers **404** on each of its
+  `paths` and everything under them (`/arena` covers `/arena/` and
+  `/arena/x.js`), before the site's files, SPA fallback or upstream — so a
+  feature with pages of its own can't be reached by URL either. A path is a
+  plain prefix; `/` is refused (switch the site off instead).
+- On a **locked** site the endpoint and the 404s are behind the login page,
+  like everything else.
+- **The build declares, the server decides.** A deploy never changes a flag's
+  switch: a server config with `flags` is left out of the mirror, and the
+  build's own `flags` are merged in — a flag new to the server arrives as the
+  build ships it (off unless it says `on`), an existing one keeps the server's
+  switch and takes the build's description and paths (when the build writes it
+  as an object), and a flag only the server has is kept.
+- Flip them from the [back-office](#back-office) (the site's details) or with
+  [`zipgo flag`](#zipgo-flag). Names are a letter then up to 63 letters,
+  digits, `-` or `_`.
+
 ### Back-office
 
 A page to switch sites off and on from a phone, one per domain, behind the same
@@ -358,6 +410,10 @@ zipgo admin set admin.yourdomain.com --generate   # prints the password once
   (one row per host, grouped by top-level label), a search box, and *On / Off
   / 🔒* filters. Each row shows the type (static, SPA, proxy, redirect), the
   lock, when the site was last deployed and its size, and opens the site.
+- A site with [feature flags](#feature-flags) shows `⚑ on/total` on its row
+  (and a *⚑* filter); its details list each flag with its description, the
+  paths it closes while off and a **switch** — the same edit as
+  [`zipgo flag on|off`](#zipgo-flag), with an Undo.
 - Tapping a site opens its details and its **password**: set one, generate
   one (shown once), change it or take it off — the `password` block that
   [`zipgo password`](#zipgo-password) writes, so deploys keep it too.
@@ -402,6 +458,7 @@ zipgo off       # switch a deployed site off (410 Gone, nested sites too)
 zipgo on        # switch it back on
 zipgo password  # put a site behind a login page, rotate or remove its password
 zipgo admin     # set up a domain's back-office (a page to switch its sites off/on)
+zipgo flag      # list, switch, add or remove a site's feature flags
 zipgo doctor    # check the local domains folder for broken sites
 zipgo enable    # install and start the systemd user service
 zipgo disable   # stop and remove the systemd user service
@@ -648,6 +705,24 @@ zipgo admin remove admin.yourdomain.com --yes    # take the back-office down
 
 Changing the password logs every open session out. `zipgo doctor` errors on an
 admin folder without a password, or on the apex.
+
+### `zipgo flag`
+
+Lists and edits a site's [feature flags](#feature-flags) — the `flags` block of
+its `.zipgoconfig.json`, on the deploy target over SSH or in a local folder
+(`--dir`), every other key left as it was:
+
+```bash
+zipgo flag ballance.game.example.com              # list (--json for JSON)
+zipgo flag on ballance.game.example.com coop      # switch flags on / off
+zipgo flag off ballance.game.example.com coop daily
+zipgo flag add spore.example.com arena --description "The arena" --path /arena
+zipgo flag rm spore.example.com arena
+```
+
+`add` creates a flag (off unless `--on`) or updates its description and paths
+(`--path ""` clears them), keeping its switch. `zipgo doctor` errors on a bad
+name or path and warns about an unknown key in a flag object.
 
 ### `zipgo doctor`
 
