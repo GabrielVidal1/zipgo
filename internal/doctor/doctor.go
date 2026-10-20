@@ -112,6 +112,7 @@ var knownConfigKeys = map[string]bool{
 	"password":               true,
 	"headers":                true,
 	"admin":                  true,
+	"flags":                  true,
 }
 
 // knownPasswordKeys are the keys of the "password" block.
@@ -119,7 +120,10 @@ var knownPasswordKeys = map[string]bool{"hash": true, "title": true, "sessionDay
 
 // knownKeyList is the human list of keys printed as a hint next to an unknown
 // key, in a stable order.
-const knownKeyList = "enable, rewrite, rewritePath, rewritePathPassthrough, redirect, redirectStatus, allowHttp, basicAuth, password, headers, admin"
+const knownKeyList = "enable, rewrite, rewritePath, rewritePathPassthrough, redirect, redirectStatus, allowHttp, basicAuth, password, headers, admin, flags"
+
+// knownFlagKeys are the keys of a flag written as an object.
+var knownFlagKeys = map[string]bool{"on": true, "description": true, "paths": true}
 
 // redirectStatuses are the status codes "redirectStatus" accepts: 301/308
 // permanent, 302/307 temporary.
@@ -363,8 +367,65 @@ func (r *Report) checkConfig(dir, host string) (sites.Config, bool) {
 	if p, ok := raw["password"]; ok {
 		r.checkPassword(p, cfg, path, host)
 	}
+	if f, ok := raw["flags"]; ok {
+		r.checkFlags(f, cfg, path, host)
+	}
 
 	return cfg, cfg.Enabled()
+}
+
+// checkFlags checks the "flags" block: names and paths the parser would
+// reject (an Error — the whole reload stops), keys a flag object doesn't know
+// (a typo'd "enabled" leaves the flag off), and flags on a back-office, which
+// never serves them.
+func (r *Report) checkFlags(raw json.RawMessage, cfg sites.Config, path, host string) {
+	var flags map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &flags); err != nil {
+		r.add(Finding{Level: Error, Host: host, Path: path,
+			Msg:  fmt.Sprintf("\"flags\" is not an object: %v", err),
+			Hint: `write {"name": true} or {"name": {"on": false, "description": "…", "paths": ["/…"]}}`})
+		return
+	}
+	if cfg.Admin && len(flags) > 0 {
+		r.add(Finding{Level: Warn, Host: host, Path: path,
+			Msg: "a back-office has no features to flag — its \"flags\" are ignored"})
+	}
+	names := make([]string, 0, len(flags))
+	for name := range flags {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if bad := sites.InvalidFlagName(name); bad != "" {
+			r.add(Finding{Level: Error, Host: host, Path: path, Msg: fmt.Sprintf("flag %q: %s", name, bad)})
+		}
+		var f sites.Flag
+		if err := json.Unmarshal(flags[name], &f); err != nil {
+			r.add(Finding{Level: Error, Host: host, Path: path, Msg: fmt.Sprintf("flag %q: %v", name, err)})
+			continue
+		}
+		for _, p := range f.Paths {
+			if bad := sites.InvalidFlagPath(p); bad != "" {
+				r.add(Finding{Level: Error, Host: host, Path: path, Msg: fmt.Sprintf("flag %q path %q: %s", name, p, bad)})
+			}
+		}
+		var keys map[string]json.RawMessage
+		if json.Unmarshal(flags[name], &keys) != nil {
+			continue // the boolean shorthand
+		}
+		var unknown []string
+		for k := range keys {
+			if !knownFlagKeys[k] {
+				unknown = append(unknown, k)
+			}
+		}
+		sort.Strings(unknown)
+		for _, k := range unknown {
+			r.add(Finding{Level: Warn, Host: host, Path: path,
+				Msg:  fmt.Sprintf("flag %q: unknown key %q is ignored", name, k),
+				Hint: "a flag knows on, description and paths"})
+		}
+	}
 }
 
 // checkAdmin checks a back-office folder ("admin": true): it must have a

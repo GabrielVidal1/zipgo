@@ -275,6 +275,9 @@ func Run(o Options) error {
 		if len(locks) > 0 {
 			fmt.Printf("   🔒 %s kept: the site stays locked\n", strings.Join(locks, " + "))
 		}
+		if fl := st.Self.Own.Flags; len(fl) > 0 && st.Self.Err == nil {
+			fmt.Printf("   ⚑ flags kept: %s\n", FlagSummary(fl))
+		}
 		if st.Self.Err != nil {
 			fmt.Printf("   ⚠️  the server's %s is unusable (%v) — left untouched\n", sites.ConfigFileName, st.Self.Err)
 		}
@@ -329,13 +332,14 @@ func printKeptOff(host string, st siteState, keepOff bool, verb string) bool {
 
 // keepConfig reports whether a deploy must leave the site's remote
 // .zipgoconfig.json out of the mirror: it switches the site off, it locks it,
-// or it can't be read — in which case it might be either.
+// it holds feature flags someone may have flipped, or it can't be read — in
+// which case it might be any of those.
 func keepConfig(f folder) bool {
 	if f.Err != nil {
 		return true
 	}
 	_, locks, err := sites.Locks(f.Config)
-	return err != nil || len(locks) > 0 || f.ownOff()
+	return err != nil || len(locks) > 0 || f.ownOff() || f.Own.HasFlags()
 }
 
 // mergeKept publishes the build's own .zipgoconfig.json (rsync skipped it)
@@ -365,11 +369,13 @@ func mergeKept(tgt Target, remoteDir, src string, remote []byte, keepOff bool) e
 }
 
 // KeepServerState returns the build's .zipgoconfig.json (local) as it must land
-// on a server whose current one is remote: switched off when keepOff, and with
-// every lock of remote put back in place of the build's own. A deploy can
-// neither unlock a site nor change its password; `zipgo password` is the one
-// way to do that. ignored names the build's own locks that were overridden.
-// Keys keep the build's order; a lock the build lacks is appended.
+// on a server whose current one is remote: switched off when keepOff, with
+// every lock of remote put back in place of the build's own, and with the
+// server's feature flags merged into the build's (MergeFlags: the server's
+// switches win, the build may declare new flags). A deploy can neither unlock
+// a site nor change its password; `zipgo password` is the one way to do that.
+// ignored names the build's own locks that were overridden. Keys keep the
+// build's order; a lock or a "flags" block the build lacks is appended.
 func KeepServerState(local, remote []byte, keepOff bool) (out []byte, ignored []string, err error) {
 	out = local
 	if keepOff {
@@ -382,8 +388,15 @@ func KeepServerState(local, remote []byte, keepOff bool) (out []byte, ignored []
 		}
 	}
 	locks, names, err := sites.Locks(remote)
-	if err != nil || len(names) == 0 {
-		return out, nil, err
+	if err != nil {
+		return nil, nil, err
+	}
+	flags, err := serverFlags(remote)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(names) == 0 && flags == nil {
+		return out, nil, nil
 	}
 	var ms []member
 	if len(bytes.TrimSpace(out)) > 0 {
@@ -406,8 +419,39 @@ func KeepServerState(local, remote []byte, keepOff bool) (out []byte, ignored []
 			ms = append(ms, member{key: k, val: locks[k]})
 		}
 	}
+	if flags != nil {
+		placed := false
+		for i := range ms {
+			if ms[i].key != "flags" || placed {
+				continue
+			}
+			if ms[i].val, err = MergeFlags(ms[i].val, flags); err != nil {
+				return nil, nil, err
+			}
+			placed = true
+		}
+		if !placed {
+			ms = append(ms, member{key: "flags", val: flags})
+		}
+	}
 	out, err = marshalObject(ms)
 	return out, ignored, err
+}
+
+// serverFlags is the "flags" block of the server's config, nil when it has
+// none.
+func serverFlags(remote []byte) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(remote)) == 0 {
+		return nil, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(remote, &m); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", sites.ConfigFileName, err)
+	}
+	if v, ok := m["flags"]; ok && string(v) != "null" {
+		return v, nil
+	}
+	return nil, nil
 }
 
 // sameJSON reports whether two JSON documents are equal as values.

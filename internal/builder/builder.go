@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"zipgo/internal/flags"
 	"zipgo/internal/gate"
 	"zipgo/internal/meta"
 	"zipgo/internal/sites"
@@ -505,6 +506,11 @@ func siteHandler(s sites.Site, host, stripPrefix string) (obj, error) {
 		return nil, err
 	}
 	checks := lockHandlers(s, host, stripPrefix)
+	// The flags come after the locks: a locked site's switches, and the paths
+	// they close, are nobody's business before the login page.
+	if h := flagsHandler(s, host, stripPrefix); h != nil {
+		checks = append(checks, h)
+	}
 	if len(checks) == 0 {
 		return inner, nil
 	}
@@ -528,6 +534,41 @@ func lockHandlers(s sites.Site, host, prefix string) arr {
 		hs = append(hs, h)
 	}
 	return hs
+}
+
+// flagsHandler builds the feature-flags handler (internal/flags) for a site
+// with a "flags" block, or nil when it has none: it serves FlagsPath and
+// answers 404 on the paths of every flag that is off. A back-office has no
+// features to flag.
+func flagsHandler(s sites.Site, host, prefix string) obj {
+	c := s.Config
+	if !c.HasFlags() || c.Admin {
+		return nil
+	}
+	h := obj{
+		"handler": flags.HandlerName,
+		"host":    host,
+		"flags":   c.FlagValues(),
+	}
+	var closed []string
+	for _, name := range sites.FlagNames(c.Flags) {
+		f := c.Flags[name]
+		if f.On {
+			continue
+		}
+		for _, p := range f.Paths {
+			if n := sites.NormalizeFlagPath(p); n != "" {
+				closed = append(closed, n)
+			}
+		}
+	}
+	if len(closed) > 0 {
+		h["closed"] = closed
+	}
+	if prefix != "" {
+		h["prefix"] = prefix
+	}
+	return h
 }
 
 // passwordHandler builds the login-page handler (internal/gate) for a site's
