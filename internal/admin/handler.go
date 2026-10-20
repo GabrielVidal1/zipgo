@@ -135,6 +135,27 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.Ha
 			log.Printf("🛠  %s: %s switched %s", a.RootHost, a.hostOf(req.ID), map[bool]string{true: "on", false: "off"}[req.On])
 		}
 		a.sites(w)
+	case "/api/flag":
+		if !allow(w, r, http.MethodPost) || !sameOrigin(w, r) {
+			return nil
+		}
+		var req struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			On   bool   `json:"on"`
+		}
+		if !decode(w, r, &req) {
+			return nil
+		}
+		changed, err := SetFlag(a.Root, a.TmpDir, a.Self, req.ID, req.Name, req.On)
+		if err != nil {
+			fail(w, http.StatusBadRequest, err)
+			return nil
+		}
+		if changed {
+			log.Printf("🛠  %s: %s flag %s %s", a.RootHost, a.hostOf(req.ID), req.Name, map[bool]string{true: "on", false: "off"}[req.On])
+		}
+		a.sites(w)
 	case "/api/password":
 		if !allow(w, r, http.MethodPost) || !sameOrigin(w, r) {
 			return nil

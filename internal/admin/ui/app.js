@@ -20,6 +20,7 @@ const state = {
   q: "",
   open: new Set(store.get("open", [""])),
   busy: new Set(),      // ids with a switch in flight
+  busyFlags: new Set(), // "id\0name" of flags with a switch in flight
   sheet: null,          // id shown in the details sheet
 };
 
@@ -85,6 +86,26 @@ async function flip(id, on, undoable = true) {
   }
 }
 
+// ---- feature flags -----------------------------------------------------------
+
+async function flipFlag(id, name, on, undoable = true) {
+  const s = state.byId.get(id);
+  const key = id + "\0" + name;
+  state.busyFlags.add(key);
+  if (state.sheet !== null) fillSheet();
+  try {
+    load(await api("api/flag", { id, name, on }));
+    toast(`${name} ${on ? "on" : "off"} · ${s.host}`, undoable ? () => flipFlag(id, name, !on, false) : null);
+  } catch (e) {
+    toast(`${name}: ${e.message}`, null, true);
+  } finally {
+    state.busyFlags.delete(key);
+    if (state.sheet !== null) fillSheet();
+  }
+}
+
+const flagCount = (s) => (s.flags || []).length;
+
 // ---- rendering ---------------------------------------------------------------
 
 function el(tag, props = {}, ...children) {
@@ -105,6 +126,7 @@ function matches(s) {
     case "on": return !s.off;
     case "off": return s.off;
     case "lock": return s.locked;
+    case "flags": return flagCount(s) > 0;
   }
   return true;
 }
@@ -148,7 +170,8 @@ function row(s, depth, label, chev) {
       el("span", { class: "name", text: label }),
       chev && chev.count ? el("span", { class: "cnt", text: String(chev.count) }) : null,
       el("span", { class: "badge", text: s.type }),
-      s.locked ? el("span", { title: "password-protected", text: "🔒" }) : null),
+      s.locked ? el("span", { title: "password-protected", text: "🔒" }) : null,
+      flagCount(s) ? flagChip(s) : null),
     el("span", { class: "host", text: s.host }),
     meta ? el("span", { class: "meta", text: meta }) : null,
     why ? el("span", { class: s.self ? "meta" : "why", text: why }) : null);
@@ -167,6 +190,16 @@ function row(s, depth, label, chev) {
     chev ? chev.node : null, main, open, sw);
   r.style.setProperty("--d", depth);
   return r;
+}
+
+function flagChip(s) {
+  const on = s.flags.filter((f) => f.on).length;
+  const total = s.flags.length;
+  return el("span", {
+    class: "flagc",
+    title: `${on} of ${total} feature flag${total === 1 ? "" : "s"} on`,
+    text: `⚑ ${on}/${total}`,
+  });
 }
 
 function renderTree(out) {
@@ -214,12 +247,14 @@ function render() {
   const all = state.sites.filter((s) => !s.self);
   const off = all.filter((s) => s.off).length;
   const locked = all.filter((s) => s.locked).length;
+  const flagged = all.filter((s) => flagCount(s) > 0).length;
   $("#domain").textContent = state.host;
   const sum = $("#summary");
   sum.replaceChildren(el("b", { text: String(all.length) }), " sites · ", el("b", { text: String(all.length - off) }), " on · ",
     el("b", { class: "o", text: String(off) }), " off");
 
   const chips = [["all", `All ${all.length}`], ["on", `On ${all.length - off}`], ["off", `Off ${off}`], ["lock", `🔒 ${locked}`]];
+  if (flagged) chips.push(["flags", `⚑ ${flagged}`]);
   $("#chips").replaceChildren(...chips.map(([k, t]) => el("button", {
     class: "chip", type: "button", "aria-pressed": String(state.filter === k), text: t,
     onclick: () => { state.filter = k; render(); },
@@ -279,6 +314,7 @@ function fillSheet() {
   ];
   if (s.configError) facts.push(["Config", s.configError]);
   $("#sheet-facts").replaceChildren(...facts.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
+  fillFlags(s);
 
   const lockable = !s.self && !s.configError && s.type !== "folder";
   $("#sheet-lock").hidden = !lockable;
@@ -290,6 +326,25 @@ function fillSheet() {
   $("#lock-input").placeholder = s.password ? "New password" : "Password";
   $("#lock-save").textContent = s.password ? "Change" : "Set";
   $("#lock-remove").hidden = !s.password;
+}
+
+function fillFlags(s) {
+  const flags = s.self || s.configError ? [] : s.flags || [];
+  $("#sheet-flags").hidden = flags.length === 0;
+  $("#flag-list").replaceChildren(...flags.map((f) => {
+    const busy = state.busyFlags.has(s.id + "\0" + f.name);
+    const paths = f.paths && f.paths.length ? (f.on ? "covers " : "closed: ") + f.paths.join(", ") : "";
+    return el("li", { class: "flag" + (f.on ? "" : " isoff") },
+      el("div", { class: "fl-text" },
+        el("span", { class: "fl-name", text: f.name }),
+        f.description ? el("span", { class: "fl-desc", text: f.description }) : null,
+        paths ? el("span", { class: "fl-paths", text: paths }) : null),
+      el("button", {
+        class: "sw" + (busy ? " busy" : ""), type: "button", role: "switch",
+        "aria-checked": String(f.on), "aria-label": `${f.name} ${f.on ? "on" : "off"}`,
+        disabled: busy, onclick: () => flipFlag(s.id, f.name, !f.on),
+      }));
+  }));
 }
 
 async function lock(action, password) {

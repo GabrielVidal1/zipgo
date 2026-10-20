@@ -43,6 +43,11 @@
     <button class="ghost" value="close" aria-label="Close">✕</button>
   </form>
   <dl class="facts" id="sheet-facts"></dl>
+  <section class="flags" id="sheet-flags" hidden>
+    <h3>Feature flags</h3>
+    <p class="muted">What the site's code reads from <code>/__zipgo/flags.json</code>. A flag that is off also closes its paths (404). Deploys never flip them.</p>
+    <ul class="flag-list" id="flag-list"></ul>
+  </section>
   <section class="lock" id="sheet-lock">
     <h3>Password</h3>
     <p class="muted" id="lock-state"></p>

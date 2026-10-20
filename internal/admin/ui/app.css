@@ -141,6 +141,17 @@ a { color: inherit; }
 .generated { margin-top: 12px; padding: 12px; border-radius: 10px; background: var(--chip); display: grid; gap: 8px; }
 .generated .muted { margin: 0; }
 .generated code { font-size: 16px; letter-spacing: .03em; user-select: all; }
+.flagc { font-size: 11px; color: var(--muted); flex: none; white-space: nowrap; }
+.flags code { font-size: 12px; }
+.flag-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.flag { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.fl-text { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.fl-name { font: 600 13.5px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.fl-desc { font-size: 13px; }
+.fl-paths { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow-wrap: anywhere; }
+.flag.isoff .fl-paths { color: var(--off); }
+.sheet button.sw { border: 0; border-radius: 999px; padding: 0; background: var(--line); }
+.sheet button.sw[aria-checked="true"] { background: var(--accent); }
 [hidden] { display: none !important; }
 @media (min-width: 700px) {
   .list { padding-top: 12px; }

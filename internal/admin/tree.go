@@ -48,6 +48,9 @@ type Site struct {
 	// Modified is when the site's index.html (or, without one, its config or
 	// folder) last changed — what a deploy touches.
 	Modified *time.Time `json:"modified,omitempty"`
+	// Flags are the site's feature flags, by name; nil when it has no "flags"
+	// block.
+	Flags []Flag `json:"flags,omitempty"`
 	// Self marks the back-office's own folder. It is never switched from here:
 	// that would lock the operator out of the page they are using.
 	Self bool `json:"self,omitempty"`
@@ -72,6 +75,7 @@ func List(root, rootHost, self string) ([]Site, error) {
 			s.Enabled = cfg.Enabled()
 			s.Locked = cfg.Protected()
 			s.Password = cfg.HasPassword()
+			s.Flags = flagRows(cfg)
 		}
 		s.Self = self != "" && sameDir(dir, self)
 		s.Type = siteType(dir, cfg)
