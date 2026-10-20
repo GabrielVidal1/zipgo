@@ -30,6 +30,7 @@ import (
 	"zipgo/internal/config"
 	"zipgo/internal/deploy"
 	"zipgo/internal/doctor"
+	"zipgo/internal/flags"
 	"zipgo/internal/password"
 	"zipgo/internal/remote"
 	"zipgo/internal/service"
@@ -230,6 +231,9 @@ func main() {
 	case "admin":
 		runAdmin(os.Args[2:])
 		return
+	case "flag", "flags":
+		runFlag(os.Args[2:])
+		return
 	case "version", "--version", "-v":
 		fmt.Println("zipgo", version)
 		return
@@ -246,6 +250,7 @@ func main() {
 		fmt.Println("  doctor   check the local domains folder for broken sites")
 		fmt.Println("  password put a site behind a login page, rotate or remove its password")
 		fmt.Println("  admin    set up a domain's back-office: a page to switch its sites off/on")
+		fmt.Println("  flag     list, switch, add or remove a site's feature flags")
 		fmt.Println("  version  print the version")
 		fmt.Println("  enable   Install and start the systemd user service")
 		fmt.Println("  disable  Stop and remove the systemd user service")
@@ -262,6 +267,8 @@ func main() {
 		fmt.Print(password.Usage)
 		fmt.Println()
 		fmt.Print(password.AdminUsage)
+		fmt.Println()
+		fmt.Print(flags.Usage)
 		return
 	case "serve", "":
 		// fall through to server startup
@@ -448,6 +455,19 @@ func runAdmin(args []string) {
 	}
 	store, _ := passwordStore(opts)
 	if err := password.RunAdmin(opts, store, os.Stdin, os.Stdout); err != nil {
+		log.Fatalf("❌  %v\n", err)
+	}
+}
+
+// runFlag runs `zipgo flag …`, against the same target as zipgo password.
+func runFlag(args []string) {
+	opts, err := flags.ParseArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌  %v\n\n%s", err, flags.Usage)
+		os.Exit(2)
+	}
+	store, _ := passwordStore(password.Options{SSH: opts.SSH, Dir: opts.Dir})
+	if err := flags.Run(opts, store, os.Stdout); err != nil {
 		log.Fatalf("❌  %v\n", err)
 	}
 }

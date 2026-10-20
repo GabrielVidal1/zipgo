@@ -175,6 +175,12 @@ Ordered roughly by value. Each item is one session of work.
       from the mirror, the build's own config merged back with `enable:false`);
       `ls`/`info` mark off sites (`offBy` in `--json`); `doctor` follows the
       cascade and no longer suggests `enable:false` for subdomain-holder folders.
+- [x] Feature flags: a site's `.zipgoconfig.json` `"flags"` block declares
+      switches its own code reads from `/__zipgo/flags.json`; an off flag also
+      closes its `paths` (404). Flipped from the back-office's site details or
+      `zipgo flag on|off|add|rm`; a deploy never flips them (the build declares,
+      the server decides — `deploy.MergeFlags`). First user: Ballance's co-op
+      levels (2026-10-20).
 - [ ] Per-site deploy history: keep the last N deploys under a hidden
       `.zipgo-versions/` folder and add `zipgo rollback <host>` to swap the
       previous one back in.
@@ -197,7 +203,7 @@ Ordered roughly by value. Each item is one session of work.
   the CLI and the filesystem are the interface. The one page that came back —
   the per-domain back-office (`"admin": true`) — is a *face for the files*: it
   reads the tree on every request and writes the same `.zipgoconfig.json` keys
-  the CLI writes (`enable`, `password`). Anything that would give it state of
+  the CLI writes (`enable`, `password`, `flags`). Anything that would give it state of
   its own (a database, an upload/deploy path, settings only it knows) stays
   out.
 - **A config file at the root.** `.zipgo.json` holds *deploy targets* (client

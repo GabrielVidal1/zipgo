@@ -107,6 +107,12 @@ type Config struct {
 	// never served. An admin site is not switched off by a parent, so turning
 	// the domain off doesn't take its switchboard with it.
 	Admin bool `json:"admin,omitempty"`
+	// Flags are the site's feature flags (see Flag): switches its own code
+	// reads from /__zipgo/flags.json to show or hide unfinished features, and
+	// that close the feature's own paths while they are off. Like "enable"
+	// and "password" they are server state — flipped from the back-office or
+	// `zipgo flag`, never reset by a deploy (a build can declare new ones).
+	Flags map[string]Flag `json:"flags,omitempty"`
 }
 
 // DefaultRedirectStatus is the status code used for a "redirect" site that does
@@ -453,6 +459,9 @@ func ParseConfig(data []byte) (Config, error) {
 		return Config{}, err
 	}
 	if err := ValidateHeaders(c.Headers); err != nil {
+		return Config{}, err
+	}
+	if err := ValidateFlags(c.Flags); err != nil {
 		return Config{}, err
 	}
 	return c, nil
