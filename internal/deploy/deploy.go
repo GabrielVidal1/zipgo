@@ -471,7 +471,11 @@ func sameJSON(a, b []byte) bool {
 // out so the flag→arg mapping (delete/exclude/subdomain-protection) can be
 // unit-tested without shelling out.
 func rsyncArgs(o Options, src, dest string, dryRun bool) []string {
-	args := []string{"-avz"}
+	// --safe-links: a symlink that points outside the deployed tree is not
+	// shipped. The server hides such a link anyway (it would otherwise serve
+	// whatever it points at), so leaving it out of the transfer just makes
+	// the deploy say so instead of the server's log.
+	args := []string{"-avz", "--safe-links"}
 	if o.Delete {
 		args = append(args, "--delete")
 		// Auto-protect nested subdomain folders from the mirror: their
