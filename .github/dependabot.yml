@@ -1,0 +1,22 @@
+# Keeps the three things zipgo ships pinned but current: the Go modules (Caddy
+# first of all — a static host is only as patched as the server it embeds),
+# the GitHub Actions the release runs on, and the base image of the Docker
+# build. One grouped PR per ecosystem per week; CI runs govulncheck on each.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
