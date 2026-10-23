@@ -3,8 +3,8 @@
     BAT="${INSTALL_DIR}/zipgo-start.bat"
     cat > "$BAT" <<BAT
 @echo off
-set ZIPGO_PASS=${ZIPGO_PASS}
-"${DEST}" "${INSTALL_DIR}/apps"
+set ZIPGO_DOMAINS_FOLDER=${DOMAINS_DIR}
+"${DEST}" serve
 BAT
     schtasks //Create //F \
       //TN "$TASK_NAME" \

@@ -55,6 +55,7 @@ info "Latest zipgo: ${BOLD}${LATEST}${RESET}"
 # ── build zipgo download URL ───────────────────────────────────────────────
 ASSET="zipgo-${GOOS}-${GOARCH}${EXT}"
 URL="https://github.com/${REPO}/releases/download/${LATEST}/${ASSET}"
+CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${LATEST}/checksums.txt"
 
 # ── confirm install location ───────────────────────────────────────────────
 printf "\n"
@@ -82,29 +83,40 @@ else
   fi
 fi
 
+# ── verify the download against the release's checksums.txt ──────────────
+info "Verifying checksum…"
+if command -v curl >/dev/null 2>&1; then
+  SUMS=$(curl -fsSL "$CHECKSUMS_URL")
+else
+  SUMS=$(wget -qO- "$CHECKSUMS_URL")
+fi
+EXPECTED=$(printf '%s\n' "$SUMS" | awk -v a="$ASSET" '$2 == a {print $1}')
+[ -z "$EXPECTED" ] && fatal "No checksum for ${ASSET} in ${CHECKSUMS_URL}"
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL=$(sha256sum "$DEST" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL=$(shasum -a 256 "$DEST" | awk '{print $1}')
+else
+  fatal "sha256sum or shasum is required to verify the download"
+fi
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+  rm -f "$DEST"
+  fatal "Checksum mismatch for ${ASSET} (expected ${EXPECTED}, got ${ACTUAL}) — the file was removed. Try again, or fetch it from https://github.com/${REPO}/releases"
+fi
+success "Checksum OK"
+
 chmod +x "$DEST"
 success "Binary saved → ${DEST}"
 
 # ── create domains/ directory ──────────────────────────────────────────────
-if [ ! -d "${INSTALL_DIR}/domains" ]; then
-  mkdir -p "${INSTALL_DIR}/domains"
+DOMAINS_DIR="${INSTALL_DIR}/domains"
+if [ ! -d "$DOMAINS_DIR" ]; then
+  mkdir -p "$DOMAINS_DIR"
   success "Created domains/"
 else
   info "domains/ already exists, skipping"
 fi
-info "To configure a domain, create a folder: domains/<yourdomain.com>/"
-
-# ── prompt for zipgo password ──────────────────────────────────────────────
-if [ -z "$ZIPGO_PASS" ]; then
-  printf "  Set a backoffice password (leave empty to auto-generate): "
-  read -rs ZIPGO_PASS </dev/tty
-  printf "\n"
-
-  if [ -z "$ZIPGO_PASS" ]; then
-    ZIPGO_PASS=$(openssl rand -base64 12 | tr -d '=+/')
-    printf "  Generated zipgo password: %s\n" "$ZIPGO_PASS"
-  fi
-fi
+info "To host a domain, create a folder: domains/<yourdomain.com>/ (no folder = localhost mode)"
 
 # ── OS-specific background service setup ──────────────────────────────────
 printf "\n"
@@ -130,14 +142,22 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Environment=ZIPGO_PASS=${ZIPGO_PASS}
-ExecStart=${DEST} ${INSTALL_DIR}/apps
+Environment=ZIPGO_DOMAINS_FOLDER=${DOMAINS_DIR}
+ExecStart=${DEST} serve
 Restart=on-failure
 RestartSec=5s
+NoNewPrivileges=true
 
 [Install]
 WantedBy=default.target
 UNIT
+      # A user service can't be granted CAP_NET_BIND_SERVICE; the binary
+      # carries it instead so it can bind :80/:443 for domain mode.
+      if command -v setcap >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+        sudo setcap 'cap_net_bind_service=+ep' "$DEST" 2>/dev/null \
+          && info "setcap cap_net_bind_service on ${DEST} (ports 80/443 without root)" \
+          || warn "Could not setcap ${DEST}: domain mode needs ports 80/443 — run: sudo setcap 'cap_net_bind_service=+ep' ${DEST}"
+      fi
       systemctl --user daemon-reload
       systemctl --user enable --now zipgo
       success "systemd user service registered → ${UNIT_FILE}"
@@ -153,10 +173,6 @@ UNIT
     else
       # Fallback: system-level systemd (requires sudo)
       SYSTEM_UNIT="/etc/systemd/system/zipgo.service"
-      ENV_FILE="/etc/zipgo/env"
-      sudo mkdir -p /etc/zipgo
-      printf 'ZIPGO_PASS=%s\n' "$ZIPGO_PASS" | sudo tee "$ENV_FILE" > /dev/null
-      sudo chmod 600 "$ENV_FILE"
 
       cat <<UNIT | sudo tee "$SYSTEM_UNIT" > /dev/null
 [Unit]
@@ -165,12 +181,17 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-EnvironmentFile=${ENV_FILE}
-ExecStart=${DEST} ${INSTALL_DIR}/apps
+User=$(whoami)
+Environment=ZIPGO_DOMAINS_FOLDER=${DOMAINS_DIR}
+ExecStart=${DEST} serve
 Restart=on-failure
 RestartSec=5s
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=${DOMAINS_DIR} %h/.local/share/caddy %h/.config/caddy
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
@@ -192,8 +213,12 @@ printf "%s\n" "  ${GREEN}${BOLD}zipgo ${LATEST} is ready!${RESET}"
 printf "\n"
 printf "%s\n" "  Next steps:"
 printf "\n"
-printf "%s\n" "  ${CYAN}1.${RESET}  Edit apps/root.txt with your domain"
-printf "%s\n" "      ${GREY}(leave empty for localhost mode)${RESET}"
+printf "%s\n" "  ${CYAN}1.${RESET}  Point your domain's DNS at this machine, then"
+printf "%s\n" "      mkdir domains/yourdomain.com && cp -r dist/* domains/yourdomain.com/"
+printf "%s\n" "      ${GREY}(a folder ending in a dot is a subdomain: domains/yourdomain.com/docs./)${RESET}"
 printf "\n"
-printf "%s\n" "  ${CYAN}2.${RESET}  Backoffice → ${BOLD}http://localhost:8999${RESET}"
+printf "%s\n" "  ${CYAN}2.${RESET}  No domain yet? With no domain folder zipgo serves"
+printf "%s\n" "      everything at ${BOLD}http://localhost:9000${RESET}"
+printf "\n"
+printf "%s\n" "  Docs → ${BOLD}https://github.com/${REPO}#readme${RESET}"
 printf "\n"

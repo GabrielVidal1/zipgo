@@ -16,3 +16,4 @@ info "Latest zipgo: ${BOLD}${LATEST}${RESET}"
 # ── build zipgo download URL ───────────────────────────────────────────────
 ASSET="zipgo-${GOOS}-${GOARCH}${EXT}"
 URL="https://github.com/${REPO}/releases/download/${LATEST}/${ASSET}"
+CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${LATEST}/checksums.txt"
