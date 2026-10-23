@@ -102,8 +102,11 @@ func TestAccessLogging(t *testing.T) {
 	if !ok {
 		t.Fatal("on: missing access logger")
 	}
-	if got := access["encoder"].(obj)["format"]; got != "json" {
-		t.Fatalf("encoder format: want json, got %v", got)
+	// The JSON encoder sits inside a filter that redacts the unlock password
+	// from the logged URI (TestBuildConfigHardening checks the filter).
+	enc := access["encoder"].(obj)
+	if enc["format"] != "filter" || enc["wrap"].(obj)["format"] != "json" {
+		t.Fatalf("encoder: want filter around json, got %v", enc)
 	}
 	if got := access["writer"].(obj)["output"]; got != "stdout" {
 		t.Fatalf("writer output: want stdout, got %v", got)
@@ -197,7 +200,7 @@ func TestRedirectLocation(t *testing.T) {
 
 func TestRedirectHandler(t *testing.T) {
 	// Default status: 302, path-preserving Location.
-	h := redirectHandler(sites.Site{Config: sites.Config{Redirect: "https://elsewhere.example"}}, "")
+	h := redirectHandler(sites.Site{Config: sites.Config{Redirect: "https://elsewhere.example"}}, "", false)
 	routes := h["routes"].(arr)
 	sr := routes[len(routes)-1].(obj)["handle"].(arr)[0].(obj)
 	if sr["handler"] != "static_response" {
@@ -215,7 +218,7 @@ func TestRedirectHandler(t *testing.T) {
 	// the Location placeholder expands.
 	h = redirectHandler(
 		sites.Site{Config: sites.Config{Redirect: "https://elsewhere.example", RedirectStatus: 301}},
-		"/example.com/old",
+		"/example.com/old", false,
 	)
 	routes = h["routes"].(arr)
 	rw := routes[1].(obj)["handle"].(arr)[0].(obj)
@@ -245,7 +248,7 @@ func TestSiteHandlerRedirectWins(t *testing.T) {
 }
 
 func TestProxyHandlerTLS(t *testing.T) {
-	h := proxyHandler(sites.Site{Config: sites.Config{Rewrite: "https://api.example.com"}}, "")
+	h := proxyHandler(sites.Site{Config: sites.Config{Rewrite: "https://api.example.com"}}, "api.example.test", "", false)
 	last := h["routes"].(arr)[len(h["routes"].(arr))-1].(obj)
 	rp := last["handle"].(arr)[0].(obj)
 	if rp["handler"] != "reverse_proxy" {
@@ -267,7 +270,7 @@ func TestProxyHandlerRewritePath(t *testing.T) {
 	h := proxyHandler(sites.Site{Config: sites.Config{
 		Rewrite:     "pb:8090",
 		RewritePath: "/_/",
-	}}, "")
+	}}, "admin.example.test", "", false)
 	routes := h["routes"].(arr)
 	var rw obj
 	for _, r := range routes {
@@ -300,7 +303,7 @@ func TestProxyHandlerRewritePath(t *testing.T) {
 
 // Without rewritePath a proxy site emits no rewrite route at all.
 func TestProxyHandlerNoRewritePath(t *testing.T) {
-	h := proxyHandler(sites.Site{Config: sites.Config{Rewrite: "pb:8090"}}, "")
+	h := proxyHandler(sites.Site{Config: sites.Config{Rewrite: "pb:8090"}}, "pb.example.test", "", false)
 	for _, r := range h["routes"].(arr) {
 		if handle, ok := r.(obj)["handle"].(arr); ok && len(handle) > 0 {
 			if handle[0].(obj)["handler"] == "rewrite" {
@@ -312,7 +315,7 @@ func TestProxyHandlerNoRewritePath(t *testing.T) {
 
 func TestSecurityHeaders(t *testing.T) {
 	// Default (no authorized origins): clickjacking-safe X-Frame-Options, no CSP.
-	def := securityHeaders("", nil)["response"].(obj)["set"].(obj)
+	def := securityHeaders("", nil, false)["response"].(obj)["set"].(obj)
 	if got := def["X-Frame-Options"]; !reflect.DeepEqual(got, arr{"SAMEORIGIN"}) {
 		t.Fatalf("default X-Frame-Options: want [SAMEORIGIN], got %v", got)
 	}
@@ -322,7 +325,7 @@ func TestSecurityHeaders(t *testing.T) {
 
 	// With authorized origins: CSP frame-ancestors, and X-Frame-Options dropped
 	// (the two conflict).
-	set := securityHeaders("https://*.gabvdl.xyz", nil)["response"].(obj)["set"].(obj)
+	set := securityHeaders("https://*.gabvdl.xyz", nil, false)["response"].(obj)["set"].(obj)
 	if _, ok := set["X-Frame-Options"]; ok {
 		t.Fatal("with origins: X-Frame-Options must be omitted")
 	}
@@ -440,7 +443,7 @@ func TestSecurityHeadersCustom(t *testing.T) {
 		"access-control-allow-origin": "*",             // canonicalised
 		"X-XSS-Protection":            "1; mode=block", // overrides a default
 		"Referrer-Policy":             "",              // empty → delete
-	})
+	}, false)
 	set := h["response"].(obj)["set"].(obj)
 
 	// Added.
@@ -474,7 +477,7 @@ func TestSecurityHeadersCustom(t *testing.T) {
 	}
 
 	// No custom headers → no delete key at all (config stays as it was).
-	if _, ok := securityHeaders("", nil)["response"].(obj)["delete"]; ok {
+	if _, ok := securityHeaders("", nil, false)["response"].(obj)["delete"]; ok {
 		t.Error("no custom headers: should not emit a delete list")
 	}
 }
@@ -483,14 +486,14 @@ func TestSecurityHeadersCustom(t *testing.T) {
 func TestCustomHeadersOnBothHandlers(t *testing.T) {
 	cfg := sites.Config{Headers: map[string]string{"Cache-Control": "no-store"}}
 
-	fileSub := fileHandler(t.TempDir(), false, "", nil, "", cfg.Headers, "")
+	fileSub := fileHandler(t.TempDir(), fileOpts{headers: cfg.Headers})
 	fileHdr := fileSub["routes"].(arr)[0].(obj)["handle"].(arr)[0].(obj)
 	if got := fileHdr["response"].(obj)["set"].(obj)["Cache-Control"]; !reflect.DeepEqual(got, arr{"no-store"}) {
 		t.Errorf("file route: Cache-Control not applied, got %v", got)
 	}
 
 	cfg.Rewrite = "localhost:8080"
-	proxySub := proxyHandler(sites.Site{Config: cfg}, "")
+	proxySub := proxyHandler(sites.Site{Config: cfg}, "x.example.test", "", false)
 	proxyHdr := proxySub["routes"].(arr)[0].(obj)["handle"].(arr)[0].(obj)
 	if got := proxyHdr["response"].(obj)["set"].(obj)["Cache-Control"]; !reflect.DeepEqual(got, arr{"no-store"}) {
 		t.Errorf("proxy route: Cache-Control not applied, got %v", got)
@@ -709,7 +712,7 @@ func TestServedAndGoneWhenOff(t *testing.T) {
 }
 
 func TestGoneHandler(t *testing.T) {
-	routes := goneHandler()["routes"].(arr)
+	routes := goneHandler(false)["routes"].(arr)
 	set := routes[0].(obj)["handle"].(arr)[0].(obj)["response"].(obj)["set"].(obj)
 	if got := set["Cache-Control"]; !reflect.DeepEqual(got, arr{"no-store"}) {
 		t.Errorf("Cache-Control = %v, want no-store (a 410 must not outlive `zipgo on`)", got)

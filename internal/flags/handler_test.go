@@ -23,6 +23,22 @@ func serve(h *Handler, method, target string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// A closed path is closed whatever its case: Caddy's own path matcher is
+// case-insensitive, and so is more than one client-side router.
+func TestClosedPathsIgnoreCase(t *testing.T) {
+	h := &Handler{Host: "ballance.example.com", Flags: map[string]bool{"coop": false}, Closed: []string{"/arena"}}
+	for _, p := range []string{"/arena", "/Arena", "/ARENA/level/1", "//arena/", "/x/../arena"} {
+		if rec := serve(h, http.MethodGet, p); rec.Code != 404 || rec.Header().Get("X-Site") != "" {
+			t.Errorf("%s: status %d, reached the site: %q", p, rec.Code, rec.Header().Get("X-Site"))
+		}
+	}
+	for _, p := range []string{"/arenas", "/arena-2", "/"} {
+		if rec := serve(h, http.MethodGet, p); rec.Code != 200 || rec.Header().Get("X-Site") == "" {
+			t.Errorf("%s: status %d, should reach the site", p, rec.Code)
+		}
+	}
+}
+
 func TestFlagsEndpoint(t *testing.T) {
 	h := &Handler{Host: "ballance.example.com", Flags: map[string]bool{"coop": false, "daily": true}}
 	rec := serve(h, http.MethodGet, "/__zipgo/flags.json")

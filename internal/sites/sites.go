@@ -113,6 +113,12 @@ type Config struct {
 	// and "password" they are server state — flipped from the back-office or
 	// `zipgo flag`, never reset by a deploy (a build can declare new ones).
 	Flags map[string]Flag `json:"flags,omitempty"`
+	// Browse, when true, gives a folder of this static site that has no
+	// index.html a directory listing. Off by default: a listing shows every
+	// file a build left behind, and a static host should say nothing about
+	// a path it has no page for. Only a static site lists (an SPA answers
+	// index.html for every path).
+	Browse *bool `json:"browse,omitempty"`
 }
 
 // DefaultRedirectStatus is the status code used for a "redirect" site that does
@@ -173,6 +179,10 @@ func (p Password) Days() int {
 
 // HasPassword reports whether the site is behind zipgo's login page.
 func (c Config) HasPassword() bool { return c.Password != nil }
+
+// BrowseEnabled reports whether the site opted into directory listings
+// (default false).
+func (c Config) BrowseEnabled() bool { return c.Browse != nil && *c.Browse }
 
 // HasBasicAuth reports whether the site is behind HTTP basic auth.
 func (c Config) HasBasicAuth() bool { return len(c.BasicAuth) > 0 }

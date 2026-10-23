@@ -75,7 +75,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 
 // relative is the request path inside the site, cleaned the way the file
 // server will clean it (so //arena or /x/../arena can't slip past a closed
-// /arena).
+// /arena); closed then compares it case-insensitively, as Caddy's own path
+// matcher does, so /Arena can't either.
 func (h *Handler) relative(p string) (string, bool) {
 	if h.Prefix != "" {
 		if p != h.Prefix && !strings.HasPrefix(p, h.Prefix+"/") {
@@ -89,10 +90,14 @@ func (h *Handler) relative(p string) (string, bool) {
 	return path.Clean("/" + p), true
 }
 
-// closed reports whether rel is under one of the off flags' paths.
+// closed reports whether rel is one of the off flags' paths or under it,
+// whatever the case.
 func (h *Handler) closed(rel string) bool {
 	for _, c := range h.Closed {
-		if rel == c || strings.HasPrefix(rel, c+"/") {
+		if len(rel) < len(c) || !strings.EqualFold(rel[:len(c)], c) {
+			continue
+		}
+		if len(rel) == len(c) || rel[len(c)] == '/' {
 			return true
 		}
 	}
