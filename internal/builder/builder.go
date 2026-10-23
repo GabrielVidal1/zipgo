@@ -3,10 +3,12 @@ package builder
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -18,6 +20,11 @@ import (
 	"zipgo/internal/sites"
 
 	"github.com/caddyserver/caddy/v2"
+	// Modules this package emits are linked here, where they are emitted, so a
+	// generated config can never name one the binary lacks (the tests load the
+	// config in real Caddy to prove it):
+	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/proxyprotocol" // caddy.listeners.proxy_protocol (withProxyProtocol)
+	_ "github.com/caddyserver/caddy/v2/modules/logging"                 // caddy.logging.encoders.filter (accessLogging)
 )
 
 // MetaPath is the path (relative to a site's host/prefix) at which the JSON
@@ -90,7 +97,19 @@ func accessLogging(servers obj, format string) obj {
 		s.(obj)["logs"] = obj{"default_logger_name": "access"}
 	}
 	logging["logs"].(obj)["access"] = obj{
-		"encoder": obj{"format": "json"},
+		// The JSON encoder is wrapped in a filter that drops the gate's
+		// unlock parameter (?__zipgo_pwd=…) from the logged URI: a link that
+		// carries a site's password must not leave it in the access log.
+		"encoder": obj{
+			"format": "filter",
+			"wrap":   obj{"format": "json"},
+			"fields": obj{
+				"request>uri": obj{
+					"filter":  "query",
+					"actions": arr{obj{"type": "delete", "parameter": gate.UnlockParam}},
+				},
+			},
+		},
 		"writer":  obj{"output": "stdout"},
 		"include": arr{"http.log.access.access"},
 	}
@@ -112,7 +131,51 @@ func accessLogging(servers obj, format string) obj {
 // every request then appears to come from the proxy. The proxy re-attaches the
 // real address as a PROXY v2 header, and this lets Caddy read it.
 func ProxyProtocolAllow() []string {
-	raw := strings.TrimSpace(os.Getenv("ZIPGO_PROXY_PROTOCOL_ALLOW"))
+	return envList("ZIPGO_PROXY_PROTOCOL_ALLOW")
+}
+
+// TrustedProxies returns the CIDR ranges whose X-Forwarded-For header Caddy
+// believes, from ZIPGO_TRUSTED_PROXIES (comma-separated). Unset, it falls back
+// to ZIPGO_PROXY_PROTOCOL_ALLOW: the proxy that prepends a PROXY header on :443
+// is the one that forwards :80 (and any re-encrypted hop) with X-Forwarded-For,
+// so the client IP — in the access log and in the gate's per-address throttle —
+// is the visitor's on every path in. Nothing is trusted when both are unset:
+// anyone could then claim any address.
+func TrustedProxies() []string {
+	if l := envList("ZIPGO_TRUSTED_PROXIES"); l != nil {
+		return l
+	}
+	return ProxyProtocolAllow()
+}
+
+// RewriteAllow returns the upstream patterns a site's "rewrite" may point at,
+// from ZIPGO_REWRITE_ALLOW (comma-separated globs over the dial address, e.g.
+// "*-pocketbase:8090,100.64.0.5:80"). Unset means any upstream, as before. Set,
+// it turns a rewrite into an operator decision: a deployed .zipgoconfig.json
+// can no longer publish whatever the server can reach (another container, a
+// tailnet service) under a public host — see UpstreamAllowed.
+func RewriteAllow() []string {
+	return envList("ZIPGO_REWRITE_ALLOW")
+}
+
+// UpstreamAllowed reports whether a reverse-proxy dial address (host:port)
+// matches one of the allow patterns. A nil allow list allows everything.
+func UpstreamAllowed(dial string, allow []string) bool {
+	if allow == nil {
+		return true
+	}
+	for _, p := range allow {
+		if ok, _ := path.Match(p, dial); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// envList splits a comma-separated environment variable, trimming blanks;
+// unset or blank yields nil.
+func envList(name string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
 		return nil
 	}
@@ -123,6 +186,146 @@ func ProxyProtocolAllow() []string {
 		}
 	}
 	return out
+}
+
+// withTrustedProxies makes each content server take the client address from
+// X-Forwarded-For when the connection comes from one of `ranges`.
+func withTrustedProxies(servers obj, ranges []string) {
+	if len(ranges) == 0 {
+		return
+	}
+	for name, s := range servers {
+		if name == "metrics" {
+			continue
+		}
+		s.(obj)["trusted_proxies"] = obj{"source": "static", "ranges": toArr(ranges)}
+	}
+}
+
+// Connection limits on every content server. Caddy (2.11.6+) already cuts a
+// request whose body read or response write stalls for a minute and caps
+// request headers at 16 KiB; these add a short deadline for the request line
+// and headers, which is where a slowloris client spends its time, and shorten
+// the keep-alive idle time so a flood of idle connections is cheaper to carry.
+const (
+	readHeaderTimeout = "15s"
+	idleTimeout       = "2m"
+)
+
+func withTimeouts(servers obj) {
+	for name, s := range servers {
+		if name == "metrics" {
+			continue
+		}
+		s.(obj)["read_header_timeout"] = readHeaderTimeout
+		s.(obj)["idle_timeout"] = idleTimeout
+	}
+}
+
+// hstsValue is the Strict-Transport-Security a site served only over HTTPS
+// sends: one year, this host only. No includeSubDomains — a site's subdomains
+// may be served by something else entirely (a plain-HTTP preview host, say) —
+// and no preload, which is a per-domain decision for the operator; a site that
+// wants either sets the header itself in its "headers".
+const hstsValue = "max-age=31536000"
+
+// httpAllowed reports whether a site is also served on :80 — it opted in with
+// allowHttp and has no password. A password site is HTTPS-only whatever
+// allowHttp says: its session cookie is Secure (a browser would never send it
+// back over HTTP), and a password has no business crossing the network in
+// clear.
+func httpAllowed(s sites.Site) bool {
+	return s.Config.HTTPAllowed() && !s.Config.HasPassword()
+}
+
+// httpsOnly reports whether a site is reached over HTTPS and nothing else, so
+// it can promise that to browsers with HSTS: domain mode (localhost mode is
+// plain HTTP) and not served on :80.
+func httpsOnly(s sites.Site, stripPrefix string) bool {
+	return stripPrefix == "" && !httpAllowed(s)
+}
+
+// dotfileRoute answers 404 for any path with a component that starts with a
+// dot — .git, .env, .DS_Store, a build tool's leftovers — before the file
+// server can serve it. The one exception is the /.well-known/ tree, which is
+// where standards put files that are meant to be fetched (security.txt,
+// assetlinks.json, apple-app-site-association). The "*/.*" pattern is a
+// substring match on the cleaned request path, so //.git, /x/../.env and
+// %2E-escaped dots are caught too. The error handler (rather than a static
+// response) lets a static site's own 404 page answer.
+func dotfileRoute() obj {
+	return obj{
+		"match": arr{obj{
+			"path": arr{"*/.*"},
+			"not":  arr{obj{"path": arr{"/.well-known/*"}}},
+		}},
+		"handle": arr{obj{"handler": "error", "status_code": "404"}},
+	}
+}
+
+// misdirectedRoute is the last route of the HTTPS server: a request whose Host
+// matches no site answers 421 instead of an empty 200. With strict_sni_host
+// on, the Host already had to match the TLS SNI, so this only meets a host
+// that has a certificate but no longer has a route.
+func misdirectedRoute() obj {
+	return obj{"handle": arr{obj{
+		"handler":     "static_response",
+		"status_code": "421",
+		"headers":     obj{"Content-Type": arr{"text/plain; charset=utf-8"}, "Cache-Control": arr{"no-store"}},
+		"body":        "421 Misdirected Request\n",
+	}}}
+}
+
+// escapingSymlinks lists the symlinks under a site folder (its nested
+// subdomain folders excluded — they are sites of their own) whose target is
+// outside that folder, or inside one of its nested sites. Caddy's file server
+// follows symlinks wherever they point, so a deployed link could serve another
+// site's files — a locked site's included — or anything else zipgo can read,
+// the certificate store and the session key first. These are hidden from the
+// file server (a prefix match, so a linked folder hides its whole subtree).
+// Links that stay inside the site are fine and left alone.
+func escapingSymlinks(root string) []string {
+	base := root
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		base = r
+	}
+	var out []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && p != root && strings.HasSuffix(d.Name(), ".") {
+			return filepath.SkipDir // a nested site: walked on its own
+		}
+		if d.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+		target, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			return nil // dangling: a 404 anyway
+		}
+		if !insideSite(base, target) {
+			log.Printf("🚫  %s: symlink → %s points outside the site, hidden", p, target)
+			out = append(out, p)
+		}
+		return nil
+	})
+	return out
+}
+
+// insideSite reports whether target lies within the site folder base without
+// crossing into a nested subdomain folder.
+func insideSite(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part != "." && strings.HasSuffix(part, ".") {
+			return false
+		}
+	}
+	return true
 }
 
 // withProxyProtocol makes each server read a PROXY header from connections
@@ -252,8 +455,8 @@ const GoneBody = `<!doctype html>
 // goneHandler builds the subroute a disabled site is served with: the usual
 // security headers, then a static 410 page. Cache-Control: no-store keeps
 // browsers from holding on to the 410 once the site is switched back on.
-func goneHandler() obj {
-	headers := securityHeaders("", map[string]string{"Cache-Control": "no-store"})
+func goneHandler(hsts bool) obj {
+	headers := securityHeaders("", map[string]string{"Cache-Control": "no-store"}, hsts)
 	return obj{"handler": "subroute", "routes": arr{
 		obj{"handle": arr{headers}},
 		obj{"handle": arr{obj{
@@ -279,7 +482,14 @@ func authorizedOrigins(s sites.Site) string {
 		log.Printf("authorized-origins: extract %s: %v", s.Path, err)
 		return ""
 	}
-	return strings.TrimSpace(m.Zipgo["authorized-origins"])
+	// The value lands in a response header: keep control characters (a
+	// newline first of all) out of it, whatever the HTML parser let through.
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, m.Zipgo["authorized-origins"]))
 }
 
 // hasWww reports whether the domain has a www subdomain site.
@@ -391,7 +601,7 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 				// visitors get a clear 410 rather than a TLS error.
 				r := obj{
 					"match":    arr{obj{"host": arr{s.Host(ds.Domain)}}},
-					"handle":   arr{goneHandler()},
+					"handle":   arr{goneHandler(!s.Config.HTTPAllowed())},
 					"terminal": true,
 				}
 				routes = append(routes, r)
@@ -406,10 +616,7 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 			if !served(s) {
 				continue
 			}
-			// A password site is HTTPS-only whatever allowHttp says: its session
-			// cookie is Secure (a browser would never send it back over HTTP),
-			// and a password has no business crossing the network in clear.
-			httpAllowed := s.Config.HTTPAllowed() && !s.Config.HasPassword()
+			plainHTTP := httpAllowed(s)
 			host := s.Host(ds.Domain)
 			// Serve /sub-domains-meta for any site that has child subdomains,
 			// before the site's own file_server so the path match wins.
@@ -420,7 +627,7 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 				}
 				mr = guard(mr, s, host, "")
 				routes = append(routes, mr)
-				if httpAllowed {
+				if plainHTTP {
 					httpRoutes = append(httpRoutes, mr)
 				}
 			}
@@ -429,7 +636,7 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 				return nil, fmt.Errorf("domain %s host %s: %w", ds.Domain, s.Host(ds.Domain), err)
 			}
 			routes = append(routes, r)
-			if httpAllowed {
+			if plainHTTP {
 				httpRoutes = append(httpRoutes, r)
 			}
 			if !s.IsApex() {
@@ -437,6 +644,9 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 			}
 		}
 	}
+
+	// Catch-all on HTTPS: a Host that is no site answers 421, not an empty 200.
+	routes = append(routes, misdirectedRoute())
 
 	// Catch-all: any host not explicitly allowed over HTTP is 301'd to HTTPS.
 	httpRoutes = append(httpRoutes, obj{"handle": arr{obj{
@@ -449,6 +659,15 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 		"https": obj{
 			"listen": arr{":443"},
 			"routes": routes,
+			// A request's Host must be the host the TLS handshake was for.
+			// zipgo routes by Host, so without this a client could present
+			// the SNI of one site — the certificate of a public one, the one
+			// a proxy in front lets through — and ask for another in the Host
+			// header: a locked or geo-fenced site served under a public
+			// site's name. Caddy issues one certificate per host (no
+			// wildcard), so browsers never coalesce two hosts on one
+			// connection and nothing legitimate is refused.
+			"strict_sni_host": true,
 		},
 		"http_redirect": obj{
 			"listen": arr{":80"},
@@ -457,6 +676,8 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 	}
 	// Domain mode only: in localhost mode nothing sits in front of zipgo.
 	withProxyProtocol(servers, ProxyProtocolAllow())
+	withTrustedProxies(servers, TrustedProxies())
+	withTimeouts(servers)
 	withMetrics(servers, metricsAddr)
 
 	cfg := obj{
@@ -501,7 +722,7 @@ func domainRoute(s sites.Site, host string) (obj, error) {
 // the check runs before anything is served — files, SPA fallback and proxied
 // upstreams alike.
 func siteHandler(s sites.Site, host, stripPrefix string) (obj, error) {
-	inner, err := unguardedSiteHandler(s, host, stripPrefix)
+	inner, err := unguardedSiteHandler(s, host, stripPrefix, httpsOnly(s, stripPrefix))
 	if err != nil {
 		return nil, err
 	}
@@ -627,36 +848,47 @@ func siteHeaders(c sites.Config) map[string]string {
 
 // unguardedSiteHandler picks what the site serves, before any auth check is
 // layered on top: the back-office, a redirect, a proxied upstream, or its own
-// files.
-func unguardedSiteHandler(s sites.Site, host, stripPrefix string) (obj, error) {
+// files. hsts says whether the site is HTTPS-only (see httpsOnly).
+func unguardedSiteHandler(s sites.Site, host, stripPrefix string, hsts bool) (obj, error) {
 	if s.Config.Admin {
-		return adminHandler(s, host, stripPrefix)
+		return adminHandler(s, host, stripPrefix, hsts)
 	}
 	if s.Config.Redirect != "" {
-		return redirectHandler(s, stripPrefix), nil
+		return redirectHandler(s, stripPrefix, hsts), nil
 	}
 	if s.Config.Rewrite != "" {
-		return proxyHandler(s, stripPrefix), nil
+		return proxyHandler(s, host, stripPrefix, hsts), nil
 	}
 	absPath, err := filepath.Abs(s.Path)
 	if err != nil {
 		return nil, err
 	}
-	// Hide subdomain folders and the per-site config file from the file_server.
+	// Hide subdomain folders, the per-site config file and any symlink that
+	// leaves the site from the file_server.
 	hide := append(dotHide(absPath), filepath.Join(absPath, sites.ConfigFileName))
+	hide = append(hide, escapingSymlinks(absPath)...)
 	notFound := ""
 	if s.HasNotFoundPage() {
 		notFound = s.NotFoundPage
 	}
-	return fileHandler(absPath, s.IsSPA, stripPrefix, hide, authorizedOrigins(s), siteHeaders(s.Config), notFound), nil
+	return fileHandler(absPath, fileOpts{
+		spa:            s.IsSPA,
+		browse:         s.Config.BrowseEnabled(),
+		stripPrefix:    stripPrefix,
+		hide:           hide,
+		frameAncestors: authorizedOrigins(s),
+		headers:        siteHeaders(s.Config),
+		notFound:       notFound,
+		hsts:           hsts,
+	}), nil
 }
 
 // redirectHandler builds a subroute that answers every request for the site with
 // a redirect to the site's configured target, instead of serving files. In
 // localhost mode the site's path prefix is stripped first, so the placeholder in
 // the Location header expands to the path *within* the site.
-func redirectHandler(s sites.Site, stripPrefix string) obj {
-	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), siteHeaders(s.Config))}}}
+func redirectHandler(s sites.Site, stripPrefix string, hsts bool) obj {
+	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), siteHeaders(s.Config), hsts)}}}
 	if stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
 			"handler":           "rewrite",
@@ -735,10 +967,17 @@ func guard(route obj, s sites.Site, host, prefix string) obj {
 // proxyHandler builds a reverse_proxy subroute forwarding to the site's rewrite
 // upstream. It keeps the same security-headers handler as file routes (custom
 // .zipgoconfig.json headers included), and (in localhost mode) strips the path
-// prefix before proxying.
-func proxyHandler(s sites.Site, stripPrefix string) obj {
+// prefix before proxying. When ZIPGO_REWRITE_ALLOW is set, an upstream it does
+// not list is not proxied at all: the site answers 403 and the refusal is
+// logged, so a deploy can't quietly publish an internal service.
+func proxyHandler(s sites.Site, host, stripPrefix string, hsts bool) obj {
 	dial, useTLS := proxyDial(s.Config.Rewrite)
-	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), siteHeaders(s.Config))}}}
+	if allow := RewriteAllow(); !UpstreamAllowed(dial, allow) {
+		log.Printf("🚫  %s: rewrite upstream %q is not in ZIPGO_REWRITE_ALLOW (%s) — the site answers 403",
+			host, dial, strings.Join(allow, ","))
+		return refusedUpstreamHandler(hsts)
+	}
+	routes := arr{obj{"handle": arr{securityHeaders(authorizedOrigins(s), siteHeaders(s.Config), hsts)}}}
 	if stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
 			"handler":           "rewrite",
@@ -757,6 +996,21 @@ func proxyHandler(s sites.Site, stripPrefix string) obj {
 	}
 	routes = append(routes, obj{"handle": arr{rp}})
 	return obj{"handler": "subroute", "routes": routes}
+}
+
+// refusedUpstreamHandler is what a site whose rewrite upstream is outside
+// ZIPGO_REWRITE_ALLOW serves: a plain 403 that names the fix for the operator
+// and nothing about the upstream.
+func refusedUpstreamHandler(hsts bool) obj {
+	return obj{"handler": "subroute", "routes": arr{
+		obj{"handle": arr{securityHeaders("", map[string]string{"Cache-Control": "no-store"}, hsts)}},
+		obj{"handle": arr{obj{
+			"handler":     "static_response",
+			"status_code": "403",
+			"headers":     obj{"Content-Type": arr{"text/plain; charset=utf-8"}},
+			"body":        "403 Forbidden: this site's upstream is not allowed on this server (ZIPGO_REWRITE_ALLOW)\n",
+		}}},
+	}}
 }
 
 // rewritePathRoute prepends the site's rewritePath to the upstream request path,
@@ -862,7 +1116,7 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr, logFormat stri
 			if Gone(s) {
 				routes = append(routes, obj{
 					"match":    arr{obj{"path": arr{pathPrefix, pathPrefix + "/*"}}},
-					"handle":   arr{goneHandler()},
+					"handle":   arr{goneHandler(false)},
 					"terminal": true,
 				})
 				continue
@@ -901,6 +1155,7 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr, logFormat stri
 			"routes": routes,
 		},
 	}
+	withTimeouts(servers)
 	withMetrics(servers, metricsAddr)
 
 	cfg := obj{
@@ -917,26 +1172,49 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr, logFormat stri
 
 // ---- shared file-serving handler -------------------------------------------
 
+// fileOpts is how a site's folder is served (see fileHandler).
+type fileOpts struct {
+	// spa: unmatched paths fall back to index.html.
+	spa bool
+	// browse: a folder without an index gets a directory listing. Off unless
+	// the site's .zipgoconfig.json says "browse": true — a listing shows
+	// every file a build left behind.
+	browse bool
+	// stripPrefix is the localhost-mode path prefix ("" in domain mode).
+	stripPrefix string
+	// hide lists absolute paths the file_server neither lists nor serves:
+	// the nested subdomain folders, the config file, escaping symlinks.
+	hide []string
+	// frameAncestors is the site's zipgo:authorized-origins value.
+	frameAncestors string
+	// headers is the site's "headers" map, merged into the security headers.
+	headers map[string]string
+	// notFound is the site's custom 404 page (a file name, "" for none).
+	notFound string
+	// hsts: the site is HTTPS-only and says so.
+	hsts bool
+}
+
 // fileHandler builds the subroute that serves a single site from root.
 // When stripPrefix is non-empty (localhost mode) a strip_path_prefix rewrite is
 // inserted so requests under /domain/name are served as if they were at root.
-// SPA sites fall back to index.html for unmatched paths. hide lists absolute
-// paths the file_server should hide from listing and serving (used to keep the
-// apex from exposing its dot-suffixed subdomain folders). custom is the site's
-// .zipgoconfig.json "headers" map, merged into the security headers. notFound is
-// the site's custom 404 page (a file name, "" when it has none), served in place
-// of Caddy's plain-text 404 body.
-func fileHandler(root string, isSPA bool, stripPrefix string, hide []string, frameAncestors string, custom map[string]string, notFound string) obj {
-	routes := arr{obj{"handle": arr{securityHeaders(frameAncestors, custom)}}}
+// Dotfiles are refused before the file server sees them (dotfileRoute). SPA
+// sites fall back to index.html for unmatched paths. A custom 404 page, when
+// the site has one, replaces Caddy's plain-text 404 body.
+func fileHandler(root string, o fileOpts) obj {
+	routes := arr{obj{"handle": arr{securityHeaders(o.frameAncestors, o.headers, o.hsts)}}}
 
-	if stripPrefix != "" {
+	if o.stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
 			"handler":           "rewrite",
-			"strip_path_prefix": stripPrefix,
+			"strip_path_prefix": o.stripPrefix,
 		}}})
 	}
 
-	if isSPA {
+	routes = append(routes, dotfileRoute())
+
+	hide, notFound := o.hide, o.notFound
+	if o.spa {
 		spaServer := obj{"handler": "file_server", "root": root, "index_names": arr{"index.html"}}
 		fallbackServer := obj{"handler": "file_server", "root": root}
 		if len(hide) > 0 {
@@ -964,7 +1242,9 @@ func fileHandler(root string, isSPA bool, stripPrefix string, hide []string, fra
 			"handler":     "file_server",
 			"root":        root,
 			"index_names": arr{"index.html", "index.htm"},
-			"browse":      obj{},
+		}
+		if o.browse {
+			fs["browse"] = obj{}
 		}
 		if len(hide) > 0 {
 			fs["hide"] = toArr(hide)
@@ -973,7 +1253,7 @@ func fileHandler(root string, isSPA bool, stripPrefix string, hide []string, fra
 	}
 
 	sub := obj{"handler": "subroute", "routes": routes}
-	if !isSPA && notFound != "" {
+	if !o.spa && notFound != "" {
 		sub["errors"] = notFoundErrors(root, hide, notFound)
 	}
 	return sub
@@ -1029,12 +1309,19 @@ func toArr(s []string) arr {
 // the default it replaces, and an empty value deletes the header (from the
 // defaults and from anything the file_server or upstream set) instead of
 // sending it blank.
-func securityHeaders(frameAncestors string, custom map[string]string) obj {
+//
+// hsts adds Strict-Transport-Security (hstsValue) for a site that is only ever
+// served over HTTPS — a site that opted into plain HTTP must not promise
+// browsers otherwise, and localhost mode is plain HTTP throughout.
+func securityHeaders(frameAncestors string, custom map[string]string, hsts bool) obj {
 	set := obj{
 		"X-Content-Type-Options": arr{"nosniff"},
 		"Referrer-Policy":        arr{"strict-origin-when-cross-origin"},
 		"X-XSS-Protection":       arr{"0"},
 		"Permissions-Policy":     arr{"camera=(), microphone=(), geolocation=(), payment=()"},
+	}
+	if hsts {
+		set["Strict-Transport-Security"] = arr{hstsValue}
 	}
 	if frameAncestors == "" {
 		set["X-Frame-Options"] = arr{"SAMEORIGIN"}

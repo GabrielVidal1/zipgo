@@ -15,11 +15,11 @@
   <key>ProgramArguments</key>
   <array>
     <string>${DEST}</string>
-    <string>${INSTALL_DIR}/apps</string>
+    <string>serve</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>ZIPGO_PASS</key>      <string>${ZIPGO_PASS}</string>
+    <key>ZIPGO_DOMAINS_FOLDER</key> <string>${DOMAINS_DIR}</string>
   </dict>
   <key>RunAtLoad</key>         <true/>
   <key>KeepAlive</key>         <true/>

@@ -11,8 +11,21 @@ services:
     volumes:
       # Your sites: one folder per domain (e.g. ./domains/example.com/)
       - ./domains:/domains
-      # Persist Let's Encrypt certificates across restarts
-      - zipgo-data:/root/.local/share/caddy
+      # Let's Encrypt certificates and the session key, across restarts.
+      # (Before v1.11 this was mounted at /root/.local/share/caddy: move the
+      # same volume here, or Caddy requests every certificate again.)
+      - zipgo-data:/data
+    # The container is a static file server run by an unprivileged user
+    # (see docker/Dockerfile): no capability, no writable image, bounded.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
     restart: unless-stopped
 
 volumes:

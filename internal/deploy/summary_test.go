@@ -110,7 +110,7 @@ func TestWriteSummary(t *testing.T) {
 func TestRsyncArgs(t *testing.T) {
 	// Default (delete on, no subdomains): mirror with the subdomain guard.
 	got := rsyncArgs(Options{Delete: true}, "dist/", "u@h:/d/", false)
-	want := []string{"-avz", "--delete", "--exclude=" + subdomainExclude, "dist/", "u@h:/d/"}
+	want := []string{"-avz", "--safe-links", "--delete", "--exclude=" + subdomainExclude, "dist/", "u@h:/d/"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("default args = %v, want %v", got, want)
 	}

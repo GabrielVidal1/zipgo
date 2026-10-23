@@ -113,6 +113,7 @@ var knownConfigKeys = map[string]bool{
 	"headers":                true,
 	"admin":                  true,
 	"flags":                  true,
+	"browse":                 true,
 }
 
 // knownPasswordKeys are the keys of the "password" block.

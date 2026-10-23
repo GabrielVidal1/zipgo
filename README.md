@@ -156,6 +156,8 @@ hides it). All keys are optional:
   "headers": {                     // extra response headers, merged into the
     "Cache-Control": "public, max-age=31536000, immutable"
   },                               //   security headers zipgo already sends
+  "browse": false,                 // true → a folder with no index.html lists
+                                   //   its files (default: 404; never on an SPA)
   "admin": false,                  // true → this folder is the back-office of
                                    //   the site it is nested in (needs a
                                    //   "password"; `zipgo admin set` writes both)
@@ -174,6 +176,11 @@ hides it). All keys are optional:
 }
 ```
 
+- **`browse: true`** turns on directory listings for the folders of a static
+  site that have no `index.html`. Off by default: a listing shows every file a
+  build left behind, so a path with no page answers 404 (or the site's own
+  `404.html`) unless the site asks to list. An SPA never lists — every path is
+  `index.html`.
 - **`enable: false`** switches the site off without deleting it: every request
   gets a small **410 Gone** page (with `Cache-Control: no-store`, so nothing
   lingers once it's back on), it keeps its TLS certificate so visitors see that
@@ -801,6 +808,8 @@ good config. `doctor` is the fastest way to find which file it is.
 | `ZIPGO_METRICS_ADDR`    | `127.0.0.1:2019` | Address for the metrics endpoint (loopback by default) |
 | `ZIPGO_LOG_FORMAT`      | _(off)_   | Set to `json` for one JSON access-log line per request on stdout |
 | `ZIPGO_PROXY_PROTOCOL_ALLOW` | _(off)_ | Comma-separated CIDRs allowed to send a PROXY header (see below) |
+| `ZIPGO_TRUSTED_PROXIES` | _(= the PROXY list)_ | Comma-separated CIDRs whose `X-Forwarded-For` is believed (see below) |
+| `ZIPGO_REWRITE_ALLOW`   | _(off = any)_ | Comma-separated globs over `host:port`; a `rewrite` upstream not listed answers 403 (see *Security*) |
 
 If the domains folder contains no valid domain folders, zipgo automatically falls back to localhost mode.
 
@@ -834,6 +843,12 @@ arbitrary client would let that client choose its own source address, which
 defeats anything built on the client IP. Listed sources use go-proxyproto's
 `USE` policy, which reads the header when present and is otherwise a no-op, so
 you can enable this side first and switch the proxy over afterwards.
+
+The same proxy usually forwards plain HTTP (:80) — and any host it terminates
+itself — with an `X-Forwarded-For` header instead. zipgo believes that header
+from the PROXY sources too, so the client address is the visitor's on every
+path in; set `ZIPGO_TRUSTED_PROXIES` to use a different list. With neither
+variable set, nobody is trusted.
 
 ### Metrics
 
@@ -869,6 +884,88 @@ can pick access logs out from zipgo's own error output:
 
 Off by default (no per-request logging, only Caddy errors). The loopback metrics
 server is excluded, so Prometheus scrapes don't flood the request stream.
+
+---
+
+## Docker
+
+`docker compose up -d` builds the image from `docker/Dockerfile`: it downloads
+the release binary for the platform, checks it against the release's
+`checksums.txt`, and runs it as an unprivileged user (uid 1000 — the usual
+owner of a mounted `domains/` folder, so the back-office can write a site's
+`.zipgoconfig.json` the way `zipgo off` over SSH would). Certificates and the
+session key live in `/data` (Caddy's data dir); the compose file keeps them in
+a named volume and runs the container with every capability dropped, a
+read-only image, `no-new-privileges` and pid/memory limits.
+
+```bash
+ZIPGO_VERSION=v1.11.0 docker compose build   # pin a release (recommended)
+docker compose up -d
+```
+
+Upgrading from an image older than v1.11: the data dir moved from
+`/root/.local/share/caddy` to `/data/caddy`. Mount the same volume (or bind
+folder) at `/data/caddy` — and `chown -R 1000:1000` a bind folder — or Caddy
+will request every certificate again.
+
+---
+
+## Security
+
+What a site gets without configuring anything, and the knobs that exist:
+
+- **HTTPS only.** Port 80 answers a 301 to HTTPS, and every site that isn't
+  served on :80 sends `Strict-Transport-Security: max-age=31536000` (this host
+  only — no `includeSubDomains`, no `preload`; set the header yourself in
+  `headers` to change or drop it). A site with `allowHttp` doesn't send it; a
+  `password` site is HTTPS-only whatever `allowHttp` says.
+- **One certificate per host, exact subjects**, Let's Encrypt over HTTP-01. No
+  on-demand TLS: a certificate is only ever requested for a folder that exists.
+- **The Host header must match the TLS SNI** (`strict_sni_host`, 421
+  otherwise). zipgo routes by Host; without this a client could present a
+  public site's SNI — what a TLS-passthrough proxy or an edge geo-fence lets
+  through — and ask for a locked or fenced host in the Host header.
+- **Security headers** on every response: `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options:
+  SAMEORIGIN` (or a `Content-Security-Policy: frame-ancestors` from the
+  site's `zipgo:authorized-origins` meta tag), `Permissions-Policy` denying
+  camera, microphone, geolocation and payment, `X-XSS-Protection: 0`. A site's
+  `headers` map overrides or deletes any of them.
+- **Dotfiles are never served** — `.git`, `.env`, `.DS_Store`, whatever a build
+  left behind — except under `/.well-known/`, where standards put files that
+  are meant to be fetched. `.zipgoconfig.json` is hidden on top.
+- **No directory listing** unless a static site sets `"browse": true`.
+- **Symlinks stay inside the site.** A deployed symlink whose target is
+  outside the site's folder (or inside a nested subdomain's) is hidden, since
+  Caddy's file server would otherwise follow it — to the certificate store, to
+  a locked sibling, anywhere zipgo can read. `zipgo deploy` doesn't ship such
+  links in the first place (`rsync --safe-links`).
+- **`rewrite` upstreams can be allow-listed.** A `.zipgoconfig.json` travels
+  with a build, so on a server several people deploy to, a `rewrite` could
+  publish any service the server reaches. Set `ZIPGO_REWRITE_ALLOW` to the
+  upstreams a site may proxy (comma-separated globs over `host:port`, e.g.
+  `*-pocketbase:8090,3d-gallery:80`); an upstream not on it answers 403 and
+  the refusal is logged. Unset, any upstream is allowed.
+- **Locked sites**: bcrypt (cost 12), an HMAC-signed `__Host-` session cookie
+  keyed by a server secret in Caddy's data dir, wrong passwords throttled per
+  address (10/min) and per site (60/min), nothing of the site served before
+  the login page. The `?__zipgo_pwd=` link form is redacted from the access
+  log.
+- **Back-office** writes go through same-origin checks (`Sec-Fetch-Site`,
+  `Origin`, JSON only) on top of the session cookie, and a folder marked
+  `admin` without a password is refused rather than served.
+- **Connection limits**: 15 s to send the request headers, 2 min keep-alive
+  idle, and Caddy's own 1-minute stalled read/write deadlines and 16 KiB
+  header cap. A Host with no site answers 421.
+- **Nothing to administer**: Caddy's admin API is disabled; metrics, when
+  enabled, bind to loopback.
+- **Deployment**: the Docker image runs unprivileged, verifies the binary it
+  installs, and the compose file drops every capability (see *Docker*).
+- **Supply chain**: pinned dependencies and toolchain, `govulncheck` in CI on
+  every push and weekly, Dependabot for Go, Actions and the base image,
+  releases built with `-mod=readonly -trimpath` by commit-pinned actions.
+
+Found something? See [SECURITY.md](SECURITY.md).
 
 ---
 

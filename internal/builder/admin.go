@@ -15,9 +15,9 @@ import (
 // folder sits at the domain root. siteHandler puts the site's login page in
 // front of it; with no "password" there is no login page to put, so the
 // back-office is refused outright rather than served to anyone (fail closed).
-func adminHandler(s sites.Site, host, stripPrefix string) (obj, error) {
+func adminHandler(s sites.Site, host, stripPrefix string, hsts bool) (obj, error) {
 	if !s.Config.HasPassword() {
-		return adminRefusal(host), nil
+		return adminRefusal(host, hsts), nil
 	}
 	self, err := filepath.Abs(s.Path)
 	if err != nil {
@@ -55,12 +55,12 @@ func adminHandler(s sites.Site, host, stripPrefix string) (obj, error) {
 
 // adminRefusal is what an admin site without a password answers: a 403 that
 // says how to fix it, and nothing about the sites it would manage.
-func adminRefusal(host string) obj {
+func adminRefusal(host string, hsts bool) obj {
 	body := "<!doctype html><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex\">" +
 		"<title>403 Forbidden</title><p>This back-office has no password, so it stays closed.</p>" +
 		"<p>Set one with <code>zipgo admin set " + html.EscapeString(host) + "</code>.</p>\n"
 	return obj{"handler": "subroute", "routes": arr{
-		obj{"handle": arr{securityHeaders("", map[string]string{"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"})}},
+		obj{"handle": arr{securityHeaders("", map[string]string{"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"}, hsts)}},
 		obj{"handle": arr{obj{
 			"handler":     "static_response",
 			"status_code": "403",
