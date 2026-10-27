@@ -1,6 +1,8 @@
-// zipgo back-office: lists the managed site and every subdomain under it, with
-// an on/off switch each. Everything it shows comes from /api/sites, which reads
-// the folders' .zipgoconfig.json; everything it changes goes back there.
+// zipgo back-office: lists the managed site and every subdomain under it — or,
+// for an "admin": "all" back-office, every domain on the server, each one a
+// root of the tree — with an on/off switch each. Everything it shows comes from
+// /api/sites, which reads the folders' .zipgoconfig.json; everything it changes
+// goes back there.
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
@@ -11,6 +13,9 @@ const store = {
 
 const state = {
   host: "",
+  all: false,           // the back-office of every domain ("admin": "all")
+  roots: [],            // ids of the top-level rows: [""], or one per domain
+  domain: "",           // all: the domain chip picked ("" = every domain)
   sites: [],            // rows from the API, parent-first
   byId: new Map(),
   kids: new Map(),      // id → child ids
@@ -18,7 +23,7 @@ const state = {
   view: store.get("view", "tree"),
   filter: "all",
   q: "",
-  open: new Set(store.get("open", [""])),
+  open: new Set(),       // expanded rows, per scope (see load)
   busy: new Set(),      // ids with a switch in flight
   busyFlags: new Set(), // "id\0name" of flags with a switch in flight
   sheet: null,          // id shown in the details sheet
@@ -38,7 +43,17 @@ async function api(path, body) {
 }
 
 function load(data) {
+  const all = data.scope === "all";
+  if (all !== state.all || !state.roots.length) {
+    // The two scopes' ids don't mix ("dev." vs "gabvdl.xyz/dev."): each keeps
+    // its own expanded rows. Every domain starts folded — an overview.
+    state.open = new Set(store.get(all ? "open:all" : "open", all ? [] : [""]));
+    state.domain = all ? store.get("domain", "") : "";
+  }
+  state.all = all;
   state.host = data.host;
+  state.roots = data.roots || [""];
+  if (state.domain && !state.roots.includes(state.domain)) state.domain = "";
   state.sites = data.sites;
   state.byId = new Map(data.sites.map((s) => [s.id, s]));
   state.kids = new Map();
@@ -47,7 +62,7 @@ function load(data) {
     if (!state.kids.has(s.parent)) state.kids.set(s.parent, []);
     state.kids.get(s.parent).push(s.id);
   }
-  document.title = "zipgo · " + data.host;
+  document.title = "zipgo · " + (all ? "all domains" : data.host);
   render();
   if (state.sheet !== null) fillSheet();
 }
@@ -67,6 +82,19 @@ function nested(id) {
   const walk = (k) => (state.kids.get(k) || []).forEach((c) => { n++; walk(c); });
   walk(id);
   return n;
+}
+
+// rootOf is the id of the top-level row a row sits under.
+const rootOf = (id) => (state.all ? id.split("/")[0] : "");
+const isRoot = (s) => s.parent === null;
+// shown is whether a row belongs to the domain picked by a chip.
+const shown = (s) => !state.domain || rootOf(s.id) === state.domain;
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+function toggleOpen(id) {
+  state.open.has(id) ? state.open.delete(id) : state.open.add(id);
+  store.set(state.all ? "open:all" : "open", [...state.open]);
+  render();
 }
 
 async function flip(id, on, undoable = true) {
@@ -153,6 +181,12 @@ const bytes = (n) => {
 
 function metaLine(s) {
   const bits = [];
+  if (state.all && isRoot(s)) {
+    // A domain's row says what its switch would take down.
+    const rows = state.sites.filter((x) => !x.self && rootOf(x.id) === s.id);
+    const off = rows.filter((x) => x.off).length;
+    bits.push(plural(rows.length, "site") + (off ? ` · ${off} off` : ""));
+  }
   if (s.modified) bits.push("deployed " + ago(s.modified));
   const z = state.sizes && state.sizes[s.id];
   if (z && s.type !== "proxy" && s.type !== "redirect" && s.type !== "admin") bits.push(bytes(z.bytes));
@@ -172,7 +206,8 @@ function row(s, depth, label, chev) {
       el("span", { class: "badge", text: s.type }),
       s.locked ? el("span", { title: "password-protected", text: "🔒" }) : null,
       flagCount(s) ? flagChip(s) : null),
-    el("span", { class: "host", text: s.host }),
+    // A domain's name is its host already.
+    state.all && isRoot(s) ? null : el("span", { class: "host", text: s.host }),
     meta ? el("span", { class: "meta", text: meta }) : null,
     why ? el("span", { class: s.self ? "meta" : "why", text: why }) : null);
 
@@ -186,7 +221,7 @@ function row(s, depth, label, chev) {
   });
   const open = s.url ? el("a", { class: "open", href: s.url, target: "_blank", rel: "noopener noreferrer", "aria-label": `Open ${s.host}`, text: "↗" }) : el("span", { class: "open" });
 
-  const r = el("div", { class: "row" + (s.offBy ? " dim" : "") + (s.off && !s.offBy ? " isoff" : "") },
+  const r = el("div", { class: "row" + (s.offBy ? " dim" : "") + (s.off && !s.offBy ? " isoff" : "") + (state.all && isRoot(s) ? " root" : "") },
     chev ? chev.node : null, main, open, sw);
   r.style.setProperty("--d", depth);
   return r;
@@ -208,26 +243,30 @@ function renderTree(out) {
     if (!subtreeMatches(id)) return;
     const s = state.byId.get(id);
     const kids = state.kids.get(id) || [];
-    const isOpen = forced || state.open.has(id);
+    // A domain picked by its chip is shown unfolded.
+    const isOpen = forced || state.open.has(id) || (state.domain !== "" && id === state.domain);
     const chev = kids.length
       ? el("button", {
           class: "chev", type: "button", "aria-expanded": String(isOpen), "aria-label": (isOpen ? "Collapse " : "Expand ") + s.host,
           text: isOpen ? "▾" : "▸",
-          onclick: () => { state.open.has(id) ? state.open.delete(id) : state.open.add(id); store.set("open", [...state.open]); render(); },
+          onclick: () => toggleOpen(id),
         })
       : el("span", { class: "chev none" });
-    out.append(row(s, depth, s.label, { node: chev, count: kids.length ? nested(id) : 0 }));
+    // A domain's row carries its count in its meta line instead.
+    const count = kids.length && !(state.all && isRoot(s)) ? nested(id) : 0;
+    out.append(row(s, depth, s.label, { node: chev, count }));
     if (isOpen) kids.forEach((k) => walk(k, depth + 1));
   };
-  walk("", 0);
+  state.roots.filter((r) => !state.domain || r === state.domain).forEach((r) => walk(r, 0));
 }
 
 function renderList(out) {
-  // Group by the managed site's direct child each host sits under.
+  // Group by domain on the back-office of every domain, else by the managed
+  // site's direct child each host sits under.
   const groups = new Map();
   for (const s of state.sites) {
-    if (!matches(s)) continue;
-    const top = s.id === "" ? "" : s.id.split("/")[0];
+    if (!shown(s) || !matches(s)) continue;
+    const top = state.all ? rootOf(s.id) : s.id === "" ? "" : s.id.split("/")[0];
     if (!groups.has(top)) groups.set(top, []);
     groups.get(top).push(s);
   }
@@ -237,21 +276,42 @@ function renderList(out) {
     const sec = el("div", { class: "sec", text: `${head} · ${rows.length}` });
     sec.style.setProperty("--top", top + "px");
     out.append(sec);
+    // Labels drop the root's host: "card-editor.dev", not the whole name.
+    const suffix = (s) => state.byId.get(rootOf(s.id)).host;
     rows
       .sort((a, b) => a.host.split(".").reverse().join(".").localeCompare(b.host.split(".").reverse().join(".")))
-      .forEach((s) => out.append(row(s, 0, s.id === "" ? s.host : s.host.slice(0, -state.host.length - 1))));
+      .forEach((s) => out.append(row(s, 0, isRoot(s) ? s.host : s.host.slice(0, -suffix(s).length - 1))));
   }
 }
 
+// renderDomains is the back-office of every domain's chip row: one chip per
+// domain, picking one narrows the page (counts included) to it.
+function renderDomains() {
+  const box = $("#domains");
+  box.hidden = !state.all;
+  if (!state.all) return;
+  const count = (r) => state.sites.filter((s) => !s.self && rootOf(s.id) === r).length;
+  const pick = (d) => { state.domain = d; store.set("domain", d); render(); };
+  box.replaceChildren(
+    el("button", { class: "chip dchip", type: "button", "aria-pressed": String(state.domain === ""), text: `All ${state.roots.length}`, onclick: () => pick("") }),
+    ...state.roots.map((r) => el("button", {
+      class: "chip dchip", type: "button", "aria-pressed": String(state.domain === r), onclick: () => pick(r),
+    }, r, el("span", { class: "n", text: String(count(r)) }))),
+  );
+}
+
 function render() {
-  const all = state.sites.filter((s) => !s.self);
+  const all = state.sites.filter((s) => !s.self && shown(s));
   const off = all.filter((s) => s.off).length;
   const locked = all.filter((s) => s.locked).length;
   const flagged = all.filter((s) => flagCount(s) > 0).length;
-  $("#domain").textContent = state.host;
+  $("#domain").textContent = state.all ? "All domains" : state.host;
   const sum = $("#summary");
-  sum.replaceChildren(el("b", { text: String(all.length) }), " sites · ", el("b", { text: String(all.length - off) }), " on · ",
+  sum.replaceChildren(
+    ...(state.all && !state.domain ? [el("b", { text: String(state.roots.length) }), " domains · "] : []),
+    el("b", { text: String(all.length) }), " sites · ", el("b", { text: String(all.length - off) }), " on · ",
     el("b", { class: "o", text: String(off) }), " off");
+  renderDomains();
 
   const chips = [["all", `All ${all.length}`], ["on", `On ${all.length - off}`], ["off", `Off ${off}`], ["lock", `🔒 ${locked}`]];
   if (flagged) chips.push(["flags", `⚑ ${flagged}`]);
@@ -263,7 +323,7 @@ function render() {
 
   const list = $("#list");
   const frag = document.createDocumentFragment();
-  if (state.byId.has("")) {
+  if (state.roots.length) {
     if (state.view === "tree") renderTree(frag); else renderList(frag);
   }
   if (!frag.childNodes.length) frag.append(el("p", { class: "empty", text: state.sites.length ? "Nothing matches." : "Loading…" }));
@@ -299,7 +359,7 @@ function openSheet(id) {
 function fillSheet() {
   const s = state.byId.get(state.sheet);
   if (!s) { $("#sheet").close(); return; }
-  $("#sheet-title").textContent = s.id === "" ? s.host : s.label;
+  $("#sheet-title").textContent = isRoot(s) ? s.host : s.label;
   const link = $("#sheet-link");
   link.textContent = s.host + (s.url ? " ↗" : "");
   if (s.url) link.href = s.url; else link.removeAttribute("href");
@@ -310,7 +370,7 @@ function fillSheet() {
     ["State", s.self ? "this page" : s.offBy ? `off through ${s.offBy}` : s.off ? "off (410 Gone)" : "on"],
     ["Deployed", s.modified ? `${new Date(s.modified).toLocaleString()} (${ago(s.modified)})` : "—"],
     ["Size", z ? `${bytes(z.bytes)} · ${z.files} file${z.files === 1 ? "" : "s"}` : state.sizes ? "—" : "…"],
-    ["Folder", s.id === "" ? "(root)" : s.id],
+    ["Folder", s.id === "" ? "(root)" : s.id + (state.all && isRoot(s) ? " (domain)" : "")],
   ];
   if (s.configError) facts.push(["Config", s.configError]);
   $("#sheet-facts").replaceChildren(...facts.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));

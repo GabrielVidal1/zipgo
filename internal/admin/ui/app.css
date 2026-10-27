@@ -48,6 +48,12 @@ a { color: inherit; }
   white-space: nowrap; cursor: pointer;
 }
 .chip[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+.chips[hidden] { display: none; }
+/* Domain chips pick where to look; the state chips below filter what. */
+.dchip { background: transparent; border: 1px solid var(--line); padding: 4px 11px; }
+.dchip .n { color: var(--muted); font-size: 11.5px; margin-left: 5px; }
+.dchip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.dchip[aria-pressed="true"] .n { color: inherit; opacity: .7; }
 
 .list { max-width: 760px; margin: 0 auto; padding: 0 0 96px; }
 .empty { color: var(--muted); text-align: center; padding: 48px 16px; }
@@ -61,6 +67,9 @@ a { color: inherit; }
   padding: 9px 12px 9px calc(10px + var(--d, 0) * 18px);
 }
 .row.isoff { background: var(--off-soft); }
+/* A domain on the back-office of every domain: a group head. */
+.row.root .name { font-size: 16px; }
+.row.root:not(:first-child) { margin-top: 12px; border-top: 1px solid var(--line); }
 .row.dim .main, .row.dim .chev { opacity: .5; }
 .chev {
   width: 26px; height: 32px; flex: none; border: 0; background: transparent; color: var(--muted);
