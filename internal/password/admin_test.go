@@ -69,6 +69,7 @@ func TestParseAdminArgsScope(t *testing.T) {
 		"set admin.example.com --all --generate":       sites.AdminAll,
 		"set admin.example.com --scope all --generate": sites.AdminAll,
 		"set admin.example.com --scope=site --stdin":   sites.AdminSite,
+		"set admin.example.com --all --keep-password":  sites.AdminAll,
 	} {
 		if o, err := ParseAdminArgs(strings.Fields(args)); err != nil || o.Scope != want || o.Host != "admin.example.com" {
 			t.Errorf("%q: %+v %v", args, o, err)
@@ -121,7 +122,10 @@ func TestRunAdminAll(t *testing.T) {
 	if out := run("set admin.example.com --stdin", "an0ther-pass\n"); scope() != sites.AdminAll || !strings.Contains(out, "keeps managing every domain") {
 		t.Errorf("a rotation must keep the scope: %s, %q", scope(), out)
 	}
-	if out := run("set admin.example.com --scope site --keep-password --days 3", ""); scope() != sites.AdminSite || !strings.Contains(out, "back-office of example.com") {
+	if out := run("set admin.example.com --scope site --keep-password", ""); scope() != sites.AdminSite || !strings.Contains(out, "back-office of example.com") {
 		t.Errorf("--scope site: %s, %q", scope(), out)
+	}
+	if out := run("set admin.example.com --all --keep-password", ""); scope() != sites.AdminAll || !strings.Contains(out, "back-office of every domain") {
+		t.Errorf("--all --keep-password: %s, %q", scope(), out)
 	}
 }

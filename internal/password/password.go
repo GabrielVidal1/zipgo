@@ -100,6 +100,16 @@ type Options struct {
 
 // ParseArgs parses everything after `zipgo password`.
 func ParseArgs(args []string) (Options, error) {
+	o, err := parseArgs(args)
+	if err != nil {
+		return o, err
+	}
+	return o, o.validate()
+}
+
+// parseArgs is ParseArgs without the final validation, which `zipgo admin`
+// runs once it has added its own flags.
+func parseArgs(args []string) (Options, error) {
 	var o Options
 	if len(args) == 0 {
 		return o, errors.New("missing command: set, status, remove or hash")
@@ -172,7 +182,7 @@ func ParseArgs(args []string) (Options, error) {
 			return o, err
 		}
 	}
-	return o, o.validate()
+	return o, nil
 }
 
 func (o Options) validate() error {
@@ -191,7 +201,7 @@ func (o Options) validate() error {
 		return errors.New("pick one of --stdin, --generate and --keep-password")
 	case o.Verb != "set" && (o.Title != nil || o.Days != 0 || o.Generate || o.KeepPassword):
 		return errors.New("--title, --days, --generate and --keep-password only go with set")
-	case o.Verb == "set" && o.KeepPassword && o.Title == nil && o.Days == 0:
+	case o.Verb == "set" && o.KeepPassword && o.Title == nil && o.Days == 0 && o.Scope == "":
 		return errors.New("--keep-password changes --title or --days: pass one")
 	case o.SSH != "" && o.Dir != "":
 		return errors.New("--ssh and --dir are exclusive")

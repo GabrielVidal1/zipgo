@@ -38,7 +38,7 @@ The page has no state of its own: what it shows and changes is the sites'
       --title T    the login page's heading (default: kept, else the host)
       --stdin      read the password from stdin instead of prompting
       --generate   make up a password and print it once
-      --keep-password  change --title/--days only
+      --keep-password  change --title/--days/--all/--scope only
   remove <host>    take the back-office down (the sites it managed are
                    untouched)
       --yes        don't ask for confirmation
@@ -85,7 +85,7 @@ func ParseAdminArgs(args []string) (Options, error) {
 			rest = append(rest, args[i])
 		}
 	}
-	o, err := ParseArgs(rest)
+	o, err := parseArgs(rest)
 	if err != nil {
 		return o, err
 	}
@@ -96,7 +96,8 @@ func ParseAdminArgs(args []string) (Options, error) {
 		return o, errors.New("--all and --scope only go with set")
 	}
 	o.Scope = scope
-	return o, nil
+	// A scope change is a change: --all --keep-password needs no --title.
+	return o, o.validate()
 }
 
 // RunAdmin executes a parsed `zipgo admin` invocation against store.
