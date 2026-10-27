@@ -457,7 +457,7 @@ func liveNested(st siteState) []string {
 	var hosts []string
 	for _, n := range st.Nested {
 		// A back-office isn't taken down by its parent (sites.Discover).
-		if !offBelow(st, n) && !n.Own.Admin {
+		if !offBelow(st, n) && !n.Own.IsAdmin() {
 			hosts = append(hosts, n.Host)
 		}
 	}

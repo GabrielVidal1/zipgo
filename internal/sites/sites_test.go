@@ -1,6 +1,7 @@
 package sites
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -447,6 +448,31 @@ func TestDiscoverAdminIgnoresTheCascade(t *testing.T) {
 	for _, s := range found {
 		if host := s.Host("example.com"); s.Off() != want[host] {
 			t.Errorf("%s: Off() = %v, want %v", host, s.Off(), want[host])
+		}
+	}
+}
+
+func TestAdminScope(t *testing.T) {
+	for raw, want := range map[string]AdminScope{
+		`{}`:               "",
+		`{"admin": false}`: "",
+		`{"admin": null}`:  "",
+		`{"admin": true}`:  AdminSite,
+		`{"admin": "all"}`: AdminAll,
+	} {
+		c, err := ParseConfig([]byte(raw))
+		if err != nil || c.Admin != want || c.IsAdmin() != (want != "") {
+			t.Errorf("%s: %q %v", raw, c.Admin, err)
+		}
+	}
+	for _, raw := range []string{`{"admin": "site"}`, `{"admin": "ALL"}`, `{"admin": 1}`, `{"admin": "yes"}`} {
+		if _, err := ParseConfig([]byte(raw)); err == nil {
+			t.Errorf("%s should be refused", raw)
+		}
+	}
+	for scope, want := range map[AdminScope]string{AdminSite: "true", AdminAll: `"all"`} {
+		if b, err := json.Marshal(scope); err != nil || string(b) != want {
+			t.Errorf("marshal %q = %s %v", scope, b, err)
 		}
 	}
 }

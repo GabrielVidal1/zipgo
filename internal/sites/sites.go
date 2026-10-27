@@ -102,11 +102,13 @@ type Config struct {
 	//
 	//	gabvdl.xyz/zipgo./.zipgoconfig.json  {"admin": true, "password": {…}}
 	//
-	// — and https://zipgo.gabvdl.xyz manages the whole domain. It needs a
-	// "password" (`zipgo admin set` writes both): without one the page is
-	// never served. An admin site is not switched off by a parent, so turning
-	// the domain off doesn't take its switchboard with it.
-	Admin bool `json:"admin,omitempty"`
+	// — and https://zipgo.gabvdl.xyz manages the whole domain. "admin": "all"
+	// makes it manage every domain the server serves instead, each one a root
+	// of its tree. It needs a "password" (`zipgo admin set` writes both):
+	// without one the page is never served. An admin site is not switched off
+	// by a parent, so turning the domain off doesn't take its switchboard with
+	// it.
+	Admin AdminScope `json:"admin,omitempty"`
 	// Flags are the site's feature flags (see Flag): switches its own code
 	// reads from /__zipgo/flags.json to show or hide unfinished features, and
 	// that close the feature's own paths while they are off. Like "enable"
@@ -126,6 +128,46 @@ type Config struct {
 // a 301 aggressively, and in a folder-tree config a redirect is as easy to undo
 // as deleting a file — the routing shouldn't outlive the file.
 const DefaultRedirectStatus = 302
+
+// AdminScope is what a back-office folder manages: "" (it is no back-office),
+// AdminSite — the site its folder is nested in, written "admin": true — or
+// AdminAll, every domain in the domains folder, written "admin": "all".
+type AdminScope string
+
+const (
+	AdminSite AdminScope = "site"
+	AdminAll  AdminScope = "all"
+)
+
+// UnmarshalJSON takes true, false, null or "all"; anything else is an error,
+// so a typo never quietly turns a folder into the wrong back-office.
+func (a *AdminScope) UnmarshalJSON(b []byte) error {
+	switch strings.TrimSpace(string(b)) {
+	case "true":
+		*a = AdminSite
+	case "false", "null":
+		*a = ""
+	case `"all"`:
+		*a = AdminAll
+	default:
+		return fmt.Errorf(`"admin" must be true or "all", got %s`, b)
+	}
+	return nil
+}
+
+// MarshalJSON writes the scope back the way UnmarshalJSON reads it.
+func (a AdminScope) MarshalJSON() ([]byte, error) {
+	switch a {
+	case AdminAll:
+		return []byte(`"all"`), nil
+	case AdminSite:
+		return []byte("true"), nil
+	}
+	return []byte("false"), nil
+}
+
+// IsAdmin reports whether the folder is a back-office, of either scope.
+func (c Config) IsAdmin() bool { return c.Admin != "" }
 
 // Enabled reports whether the site's own config leaves it on (default true).
 // Whether it is actually served also depends on its parents: see Site.Disabled.
@@ -403,7 +445,7 @@ func Discover(domainDir string) ([]Site, error) {
 		}
 		// An admin site ignores its parents' switch: it is how they get
 		// switched back on.
-		off := (parentOff && !cfg.Admin) || !cfg.Enabled()
+		off := (parentOff && !cfg.IsAdmin()) || !cfg.Enabled()
 		result = append(result, Site{
 			Labels:       append([]string{}, labels...),
 			Path:         dir,

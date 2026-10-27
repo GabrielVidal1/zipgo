@@ -61,6 +61,12 @@ type Site struct {
 // stop at a malformed config: that site is reported with ConfigError and the
 // walk goes on, so the page can still list (and switch) everything else.
 func List(root, rootHost, self string) ([]Site, error) {
+	return listFrom(root, "", rootHost, self)
+}
+
+// listFrom is List with every ID (and Parent) under rootID: the root's own
+// row is rootID, its subdomains rootID/<folder>…
+func listFrom(root, rootID, rootHost, self string) ([]Site, error) {
 	if _, err := os.Stat(root); err != nil {
 		return nil, err
 	}
@@ -84,7 +90,7 @@ func List(root, rootHost, self string) ([]Site, error) {
 		// sites.Discover): switching the domain off must not take its own
 		// switchboard with it.
 		switch {
-		case offBy != "" && !cfg.Admin:
+		case offBy != "" && !cfg.IsAdmin():
 			s.Off, s.OffBy = true, offBy
 		case !s.Enabled:
 			s.Off = true
@@ -113,8 +119,19 @@ func List(root, rootHost, self string) ([]Site, error) {
 			walk(filepath.Join(dir, name), path.Join(id, name), l+"."+host, l, &pid, childOff)
 		}
 	}
-	walk(root, "", rootHost, rootHost, nil, "")
+	walk(root, rootID, rootHost, rootHost, nil, "")
 	return out, nil
+}
+
+// joinID puts a folder path under a root's ID prefix.
+func joinID(rootID, id string) string {
+	switch {
+	case rootID == "":
+		return id
+	case id == "":
+		return rootID
+	}
+	return rootID + "/" + id
 }
 
 // readConfig reads a folder's .zipgoconfig.json the way the server does; a
@@ -134,7 +151,7 @@ func readConfig(dir string) (sites.Config, error) {
 // then a proxy, then the folder's own files.
 func siteType(dir string, cfg sites.Config) string {
 	switch {
-	case cfg.Admin:
+	case cfg.IsAdmin():
 		return "admin"
 	case cfg.Redirect != "":
 		return "redirect"

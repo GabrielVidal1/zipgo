@@ -63,7 +63,7 @@ func TestFlagsHandler(t *testing.T) {
 	if !reflect.DeepEqual(h, want) {
 		t.Fatalf("got  %#v\nwant %#v", h, want)
 	}
-	admin := sites.Config{Admin: true, Password: passwordConfig().Password, Flags: flaggedConfig().Flags}
+	admin := sites.Config{Admin: sites.AdminSite, Password: passwordConfig().Password, Flags: flaggedConfig().Flags}
 	if h := flagsHandler(sites.Site{Config: admin}, "admin.example.com", ""); h != nil {
 		t.Fatalf("a back-office got flags: %v", h)
 	}

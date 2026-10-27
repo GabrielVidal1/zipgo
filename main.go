@@ -508,7 +508,7 @@ func siteKind(s sites.Site) string {
 	switch {
 	case s.Off():
 		return "off   "
-	case s.Config.Admin:
+	case s.Config.IsAdmin():
 		return "admin "
 	case s.Config.Redirect != "":
 		return "redir "

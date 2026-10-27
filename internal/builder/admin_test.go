@@ -135,3 +135,40 @@ func TestAdminSiteLocalhost(t *testing.T) {
 		}
 	}
 }
+
+// "admin": "all" manages every domain: the handler gets the domains folder
+// instead of one root, and keeps the gate in front.
+func TestAdminSiteAllDomains(t *testing.T) {
+	ds := discovered(t, "example.com", []string{".", "app."},
+		map[string]string{"admin.": `{"admin": "all", "password": {"hash": "` + bcryptHash + `"}}`})
+	s := siteByHost(t, ds, "admin.example.com")
+	h, err := siteHandler(s, "admin.example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(handlerNames(h), ","); got != "zipgo_password,"+admin.HandlerName {
+		t.Fatalf("handlers = %s, want the gate then the back-office", got)
+	}
+	ah := h["routes"].(arr)[1].(obj)["handle"].(arr)[0].(obj)
+	domains := filepath.Dir(filepath.Dir(s.Path))
+	if ah["scope"] != admin.ScopeAll || ah["domains_dir"] != domains || ah["tmp_dir"] != domains || ah["self"] != s.Path {
+		t.Errorf("admin handler = %v", ah)
+	}
+	if _, ok := ah["root"]; ok {
+		t.Error("an all-domains back-office has no single root")
+	}
+
+	// In localhost mode it keeps its own prefix; each domain is linked by
+	// its own path.
+	h, err = siteHandler(s, "admin.example.com", "/example.com/admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ah = h["routes"].(arr)[1].(obj)["handle"].(arr)[0].(obj)
+	if ah["prefix"] != "/example.com/admin" {
+		t.Errorf("localhost admin handler = %v", ah)
+	}
+	if _, ok := ah["root_path"]; ok {
+		t.Error("no root_path for an all-domains back-office")
+	}
+}

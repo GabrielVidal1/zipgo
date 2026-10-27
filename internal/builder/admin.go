@@ -10,9 +10,10 @@ import (
 	"zipgo/internal/sites"
 )
 
-// adminHandler builds the back-office of an "admin": true site (internal/admin):
-// a page managing the site its folder is nested in — the whole domain when the
-// folder sits at the domain root. siteHandler puts the site's login page in
+// adminHandler builds the back-office of an "admin" site (internal/admin): a
+// page managing the site its folder is nested in — the whole domain when the
+// folder sits at the domain root — or, for "admin": "all", every domain in the
+// domains folder. siteHandler puts the site's login page in
 // front of it; with no "password" there is no login page to put, so the
 // back-office is refused outright rather than served to anyone (fail closed).
 func adminHandler(s sites.Site, host, stripPrefix string, hsts bool) (obj, error) {
@@ -22,6 +23,29 @@ func adminHandler(s sites.Site, host, stripPrefix string, hsts bool) (obj, error
 	self, err := filepath.Abs(s.Path)
 	if err != nil {
 		return nil, err
+	}
+	// New configs are written in the domains folder: the domain folder's
+	// parent, one level above the apex.
+	domainDir := self
+	for range s.Labels {
+		domainDir = filepath.Dir(domainDir)
+	}
+	domainsDir := filepath.Dir(domainDir)
+	if s.Config.Admin == sites.AdminAll {
+		// Every domain: the page reads the domains folder itself, the way the
+		// server found its domains, and links each site by its own host (or,
+		// in localhost mode, its /<domain>/… path).
+		h := obj{
+			"handler":     admin.HandlerName,
+			"scope":       admin.ScopeAll,
+			"domains_dir": domainsDir,
+			"self":        self,
+			"tmp_dir":     domainsDir,
+		}
+		if stripPrefix != "" {
+			h["prefix"] = stripPrefix
+		}
+		return h, nil
 	}
 	// The managed site is the parent folder; an apex marked admin (doctor
 	// errors on it) can only manage itself.
@@ -33,18 +57,12 @@ func adminHandler(s sites.Site, host, stripPrefix string, hsts bool) (obj, error
 			rootPath = path.Dir(stripPrefix)
 		}
 	}
-	// New configs are written in the domains folder: the domain folder's
-	// parent, one level above the apex.
-	domainDir := self
-	for range s.Labels {
-		domainDir = filepath.Dir(domainDir)
-	}
 	h := obj{
 		"handler":   admin.HandlerName,
 		"root":      root,
 		"root_host": rootHost,
 		"self":      self,
-		"tmp_dir":   filepath.Dir(domainDir),
+		"tmp_dir":   domainsDir,
 	}
 	if stripPrefix != "" {
 		h["prefix"] = stripPrefix

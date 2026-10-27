@@ -212,7 +212,7 @@ func (r *Report) walk(dir, domain string, labels []string, hosts map[string][]st
 	hosts[host] = append(hosts[host], dir)
 
 	cfg, enabled := r.checkConfig(dir, host)
-	if cfg.Admin {
+	if cfg.IsAdmin() {
 		// A back-office stays up when its parent is off (sites.Discover).
 		r.checkAdmin(dir, host, len(labels) == 0, cfg)
 		offBy = ""
@@ -387,7 +387,7 @@ func (r *Report) checkFlags(raw json.RawMessage, cfg sites.Config, path, host st
 			Hint: `write {"name": true} or {"name": {"on": false, "description": "…", "paths": ["/…"]}}`})
 		return
 	}
-	if cfg.Admin && len(flags) > 0 {
+	if cfg.IsAdmin() && len(flags) > 0 {
 		r.add(Finding{Level: Warn, Host: host, Path: path,
 			Msg: "a back-office has no features to flag — its \"flags\" are ignored"})
 	}
@@ -442,7 +442,7 @@ func (r *Report) checkAdmin(dir, host string, apex bool, cfg sites.Config) {
 			Hint: "set one with `zipgo admin set " + host + "`",
 		})
 	}
-	if apex {
+	if apex && cfg.Admin == sites.AdminSite {
 		r.add(Finding{
 			Level: Error, Host: host, Path: path,
 			Msg:  "the apex can't be a back-office: it manages the site its folder is nested in",
@@ -719,7 +719,7 @@ func (r *Report) checkHeaders(rawHeaders json.RawMessage, host, path string) {
 
 // checkContent verifies an enabled site has something to serve.
 func (r *Report) checkContent(dir, host string, cfg sites.Config) {
-	if cfg.Admin || cfg.Rewrite != "" || cfg.Redirect != "" {
+	if cfg.IsAdmin() || cfg.Rewrite != "" || cfg.Redirect != "" {
 		// A proxied or redirected site serves nothing from disk, so index.html
 		// is irrelevant.
 		return

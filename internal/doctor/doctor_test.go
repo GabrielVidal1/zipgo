@@ -699,6 +699,8 @@ func TestCheckAdmin(t *testing.T) {
 			wantMsg: "without a password stays closed", wantLevel: Error},
 		{name: "on the apex", files: map[string]string{
 			"example.com/.zipgoconfig.json": locked}, wantMsg: "the apex can't be a back-office", wantLevel: Error},
+		{name: "every domain, on an apex of its own", files: map[string]string{
+			"admin.example.org/.zipgoconfig.json": `{"admin": "all", "password": {"hash": "` + testHash + `"}}`}},
 		{name: "files next to it", files: admin(locked, map[string]string{"example.com/admin./index.html": "x"}),
 			wantMsg: "index.html ignored", wantLevel: Warn},
 		{name: "stays checked under an off parent", files: admin(`{"admin": true}`, map[string]string{

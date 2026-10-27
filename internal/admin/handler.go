@@ -1,7 +1,9 @@
 // Package admin is the back-office a domain can opt into: a folder whose
 // .zipgoconfig.json says "admin": true (and carries a "password") serves a page
 // that lists the site it is nested in and every subdomain under it, with an
-// on/off switch and a password lock each.
+// on/off switch and a password lock each. "admin": "all" lists every domain in
+// the domains folder instead, each one a root of the tree: one back-office for
+// the whole server.
 //
 // It is a face for the files, not a second source of truth: a switch writes the
 // same "enable" key `zipgo off` writes, a lock the same "password" block
@@ -23,6 +25,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -30,6 +33,8 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+
+	"zipgo/internal/config"
 )
 
 // HandlerName is the handler name the builder emits (module
@@ -42,16 +47,23 @@ var ui embed.FS
 // maxBodyBytes caps an API request: an id, a flag and maybe a password.
 const maxBodyBytes = 4096
 
+// ScopeAll is the Scope of a back-office of every domain ("admin": "all").
+const ScopeAll = "all"
+
 func init() {
 	caddy.RegisterModule(Admin{})
 }
 
 // Admin is the http.handlers.zipgo_admin module.
 type Admin struct {
+	// Scope is ScopeAll for a back-office of every domain in DomainsDir, ""
+	// for one of the site at Root.
+	Scope      string `json:"scope,omitempty"`
+	DomainsDir string `json:"domains_dir,omitempty"`
 	// Root is the folder of the site the back-office manages (the folder its
 	// own folder is nested in), RootHost that site's host.
-	Root     string `json:"root"`
-	RootHost string `json:"root_host"`
+	Root     string `json:"root,omitempty"`
+	RootHost string `json:"root_host,omitempty"`
 	// Self is the back-office's own folder: listed, never switched.
 	Self string `json:"self"`
 	// TmpDir is where new configs are written before being renamed into place:
@@ -109,7 +121,7 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.Ha
 		if !allow(w, r, http.MethodGet) {
 			return nil
 		}
-		sizes, err := Sizes(a.Root)
+		sizes, err := a.sizes()
 		if err != nil {
 			fail(w, http.StatusInternalServerError, err)
 			return nil
@@ -126,13 +138,17 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.Ha
 		if !decode(w, r, &req) {
 			return nil
 		}
-		changed, err := Switch(a.Root, a.TmpDir, a.Self, req.ID, req.On)
+		r, id, err := a.locate(req.ID)
+		var changed bool
+		if err == nil {
+			changed, err = Switch(r.Dir, a.TmpDir, a.Self, id, req.On)
+		}
 		if err != nil {
 			fail(w, http.StatusBadRequest, err)
 			return nil
 		}
 		if changed {
-			log.Printf("🛠  %s: %s switched %s", a.RootHost, a.hostOf(req.ID), map[bool]string{true: "on", false: "off"}[req.On])
+			log.Printf("🛠  %s: %s switched %s", a.name(), r.hostOf(id), map[bool]string{true: "on", false: "off"}[req.On])
 		}
 		a.sites(w)
 	case "/api/flag":
@@ -147,13 +163,17 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.Ha
 		if !decode(w, r, &req) {
 			return nil
 		}
-		changed, err := SetFlag(a.Root, a.TmpDir, a.Self, req.ID, req.Name, req.On)
+		r, id, err := a.locate(req.ID)
+		var changed bool
+		if err == nil {
+			changed, err = SetFlag(r.Dir, a.TmpDir, a.Self, id, req.Name, req.On)
+		}
 		if err != nil {
 			fail(w, http.StatusBadRequest, err)
 			return nil
 		}
 		if changed {
-			log.Printf("🛠  %s: %s flag %s %s", a.RootHost, a.hostOf(req.ID), req.Name, map[bool]string{true: "on", false: "off"}[req.On])
+			log.Printf("🛠  %s: %s flag %s %s", a.name(), r.hostOf(id), req.Name, map[bool]string{true: "on", false: "off"}[req.On])
 		}
 		a.sites(w)
 	case "/api/password":
@@ -168,18 +188,22 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.Ha
 		if !decode(w, r, &req) {
 			return nil
 		}
-		generated, err := SetLock(a.Root, a.TmpDir, a.Self, req.ID, req.Action, req.Password)
+		r, id, err := a.locate(req.ID)
+		var generated string
+		if err == nil {
+			generated, err = SetLock(r.Dir, a.TmpDir, a.Self, id, req.Action, req.Password)
+		}
 		if err != nil {
 			fail(w, http.StatusBadRequest, err)
 			return nil
 		}
-		log.Printf("🛠  %s: %s password %s", a.RootHost, a.hostOf(req.ID), req.Action)
-		list, err := List(a.Root, a.RootHost, a.Self)
+		log.Printf("🛠  %s: %s password %s", a.name(), r.hostOf(id), req.Action)
+		out, err := a.payload(generated)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, err)
 			return nil
 		}
-		reply(w, a.payload(list, generated))
+		reply(w, out)
 	default:
 		a.asset(w, r, p)
 	}
@@ -188,12 +212,70 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.Ha
 
 // sites answers the current list.
 func (a *Admin) sites(w http.ResponseWriter) {
-	list, err := List(a.Root, a.RootHost, a.Self)
+	out, err := a.payload("")
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	reply(w, a.payload(list, ""))
+	reply(w, out)
+}
+
+// root is one tree the page manages: a site folder and its host. ID is the
+// prefix of its rows' IDs — "" for a site's back-office (the IDs stay the
+// folder paths under it), the domain for one of every domain
+// ("gabvdl.xyz/dev./card-editor."). Path is its path in localhost mode.
+type root struct {
+	ID, Dir, Host, Path string
+}
+
+// roots are the trees the page manages, in order. For ScopeAll they are read
+// from the domains folder on every request, the way the server reads its
+// domains, so a domain added since is listed too.
+func (a *Admin) roots() ([]root, error) {
+	if a.Scope != ScopeAll {
+		return []root{{Dir: a.Root, Host: a.RootHost, Path: a.RootPath}}, nil
+	}
+	domains, err := config.ReadDomains(a.DomainsDir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]root, 0, len(domains))
+	for _, d := range domains {
+		r := root{ID: d, Dir: filepath.Join(a.DomainsDir, d), Host: d}
+		if a.Prefix != "" {
+			r.Path = "/" + d
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// locate splits a row's ID into its root and the folder path under it. For
+// ScopeAll the first part must name one of the domains read from the folder:
+// nothing else, so no ID reaches outside them.
+func (a *Admin) locate(id string) (root, string, error) {
+	rs, err := a.roots()
+	if err != nil {
+		return root{}, "", err
+	}
+	if a.Scope != ScopeAll {
+		return rs[0], id, nil
+	}
+	domain, rest, _ := strings.Cut(id, "/")
+	for _, r := range rs {
+		if r.ID == domain {
+			return r, rest, nil
+		}
+	}
+	return root{}, "", fmt.Errorf("no site %q", id)
+}
+
+// name is how the logs call this back-office.
+func (a *Admin) name() string {
+	if a.Scope == ScopeAll {
+		return "all domains"
+	}
+	return a.RootHost
 }
 
 // row is a Site as the page gets it: with the URL it opens.
@@ -202,37 +284,82 @@ type row struct {
 	URL string `json:"url,omitempty"`
 }
 
-func (a *Admin) payload(list []Site, generated string) map[string]any {
-	rows := make([]row, len(list))
-	for i, s := range list {
-		rows[i] = row{Site: s}
-		if s.Type != "folder" && !s.Self {
-			rows[i].URL = a.link(s)
+// payload is the page's whole state: every root's sites, parent-first, and
+// which rows are roots.
+func (a *Admin) payload(generated string) (map[string]any, error) {
+	rs, err := a.roots()
+	if err != nil {
+		return nil, err
+	}
+	rows := []row{}
+	ids := []string{}
+	for _, r := range rs {
+		list, err := listFrom(r.Dir, r.ID, r.Host, a.Self)
+		if err != nil {
+			if a.Scope == ScopeAll && errors.Is(err, os.ErrNotExist) {
+				continue // a domain folder removed since it was read
+			}
+			return nil, err
+		}
+		ids = append(ids, r.ID)
+		for _, s := range list {
+			x := row{Site: s}
+			if s.Type != "folder" && !s.Self {
+				x.URL = r.link(strings.TrimPrefix(strings.TrimPrefix(s.ID, r.ID), "/"), s.Host)
+			}
+			rows = append(rows, x)
 		}
 	}
-	out := map[string]any{"host": a.RootHost, "sites": rows}
+	out := map[string]any{"host": a.RootHost, "roots": ids, "sites": rows}
+	if a.Scope == ScopeAll {
+		out["scope"] = ScopeAll
+	}
 	if generated != "" {
 		out["password"] = generated
 	}
-	return out
+	return out, nil
+}
+
+// sizes is every root's Sizes, keyed by row ID.
+func (a *Admin) sizes() (map[string]Size, error) {
+	rs, err := a.roots()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]Size{}
+	for _, r := range rs {
+		sizes, err := Sizes(r.Dir)
+		if err != nil {
+			if a.Scope == ScopeAll && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		for id, z := range sizes {
+			out[joinID(r.ID, id)] = z
+		}
+	}
+	return out, nil
 }
 
 // link is where a site is visited: its host, or in localhost mode its path.
-func (a *Admin) link(s Site) string {
-	if a.RootPath == "" {
-		return "https://" + s.Host
+// id is its folder path under the root.
+func (r root) link(id, host string) string {
+	if r.Path == "" {
+		return "https://" + host
 	}
-	p := a.RootPath
-	if s.ID != "" {
-		for _, part := range strings.Split(s.ID, "/") {
+	p := r.Path
+	if id != "" {
+		for _, part := range strings.Split(id, "/") {
 			p += "/" + strings.TrimSuffix(part, ".")
 		}
 	}
 	return p + "/"
 }
 
-func (a *Admin) hostOf(id string) string {
-	h := a.RootHost
+// hostOf is the host of the folder at id under the root.
+func (r root) hostOf(id string) string {
+	h := r.Host
 	if id == "" {
 		return h
 	}

@@ -93,6 +93,9 @@ type Options struct {
 	JSON         bool
 	SSH          string
 	Dir          string
+	// Scope is `zipgo admin set`'s --all / --scope: "" keeps the
+	// back-office's scope (a new one manages its site), else site or all.
+	Scope sites.AdminScope
 }
 
 // ParseArgs parses everything after `zipgo password`.

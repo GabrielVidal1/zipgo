@@ -41,7 +41,7 @@ func TestRunAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Admin || cfg.Password == nil || cfg.Password.SessionDays != 30 ||
+	if cfg.Admin != sites.AdminSite || cfg.Password == nil || cfg.Password.SessionDays != 30 ||
 		bcrypt.CompareHashAndPassword([]byte(cfg.Password.Hash), []byte("s3cret-pass")) != nil {
 		t.Fatalf("config = %s", raw)
 	}
@@ -58,7 +58,70 @@ func TestRunAdmin(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ = os.ReadFile(file)
-	if cfg, err := sites.ParseConfig(raw); err != nil || cfg.Admin || cfg.Password != nil {
+	if cfg, err := sites.ParseConfig(raw); err != nil || cfg.IsAdmin() || cfg.Password != nil {
 		t.Errorf("after remove: %s", raw)
+	}
+}
+
+func TestParseAdminArgsScope(t *testing.T) {
+	for args, want := range map[string]sites.AdminScope{
+		"set admin.example.com --generate":             "",
+		"set admin.example.com --all --generate":       sites.AdminAll,
+		"set admin.example.com --scope all --generate": sites.AdminAll,
+		"set admin.example.com --scope=site --stdin":   sites.AdminSite,
+	} {
+		if o, err := ParseAdminArgs(strings.Fields(args)); err != nil || o.Scope != want || o.Host != "admin.example.com" {
+			t.Errorf("%q: %+v %v", args, o, err)
+		}
+	}
+	for _, args := range []string{"set admin.example.com --scope every", "set admin.example.com --scope", "remove admin.example.com --all", "set admin.example.com --all=yes"} {
+		if _, err := ParseAdminArgs(strings.Fields(args)); err == nil {
+			t.Errorf("%q should fail", args)
+		}
+	}
+}
+
+// --all makes the back-office manage every domain; a later set without a
+// scope (a password rotation) keeps it, --scope site narrows it back.
+func TestRunAdminAll(t *testing.T) {
+	base := t.TempDir()
+	store := Local{Base: base}
+	file := filepath.Join(base, "example.com", "admin.", sites.ConfigFileName)
+	scope := func() sites.AdminScope {
+		t.Helper()
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := sites.ParseConfig(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Admin
+	}
+	run := func(args, stdin string) string {
+		t.Helper()
+		var out bytes.Buffer
+		o, err := ParseAdminArgs(strings.Fields(args))
+		if err == nil {
+			err = RunAdmin(o, store, strings.NewReader(stdin), &out)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", args, err)
+		}
+		return out.String()
+	}
+
+	if out := run("set admin.example.com --all --stdin", "s3cret-pass\n"); !strings.Contains(out, "back-office of every domain") {
+		t.Errorf("output = %q", out)
+	}
+	if raw, _ := os.ReadFile(file); !strings.Contains(string(raw), `"admin": "all"`) || scope() != sites.AdminAll {
+		t.Fatalf("config = %s", raw)
+	}
+	if out := run("set admin.example.com --stdin", "an0ther-pass\n"); scope() != sites.AdminAll || !strings.Contains(out, "keeps managing every domain") {
+		t.Errorf("a rotation must keep the scope: %s, %q", scope(), out)
+	}
+	if out := run("set admin.example.com --scope site --keep-password --days 3", ""); scope() != sites.AdminSite || !strings.Contains(out, "back-office of example.com") {
+		t.Errorf("--scope site: %s, %q", scope(), out)
 	}
 }

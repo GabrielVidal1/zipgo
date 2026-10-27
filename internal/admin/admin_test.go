@@ -260,7 +260,7 @@ func TestSetLock(t *testing.T) {
 
 func TestSizes(t *testing.T) {
 	_, root := tree(t)
-	sizesCache.root = "" // tests share the package cache
+	sizesCache.byRoot = nil // tests share the package cache
 	got, err := Sizes(root)
 	if err != nil {
 		t.Fatal(err)

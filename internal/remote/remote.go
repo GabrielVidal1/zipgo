@@ -208,7 +208,7 @@ func parseSites(want []hostDir, out string) []Site {
 				s.RedirectStatus = cfg.RedirectCode()
 			}
 			// And the back-office replaces everything.
-			if cfg.Admin {
+			if cfg.IsAdmin() {
 				s.Type = typeAdmin
 				s.admin = true
 			}
@@ -285,7 +285,7 @@ func parseSwitches(found []hostDir, out string) []Site {
 		if cfg, err := decodeConfig(cfgs[hd.dir]); err == nil {
 			list[i].Enabled = cfg.Enabled()
 			list[i].ownOff = !cfg.Enabled()
-			list[i].admin = cfg.Admin
+			list[i].admin = cfg.IsAdmin()
 		}
 	}
 	cascade(list)

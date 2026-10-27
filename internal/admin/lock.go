@@ -107,17 +107,20 @@ const sizesTTL = time.Minute
 
 var sizesCache struct {
 	sync.Mutex
-	root string
-	at   time.Time
-	val  map[string]Size
+	byRoot map[string]sizesEntry
+}
+
+type sizesEntry struct {
+	at  time.Time
+	val map[string]Size
 }
 
 // Sizes returns every site's Size, keyed by Site.ID.
 func Sizes(root string) (map[string]Size, error) {
 	sizesCache.Lock()
 	defer sizesCache.Unlock()
-	if sizesCache.root == root && time.Since(sizesCache.at) < sizesTTL {
-		return sizesCache.val, nil
+	if e, ok := sizesCache.byRoot[root]; ok && time.Since(e.at) < sizesTTL {
+		return e.val, nil
 	}
 	out := map[string]Size{}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -141,7 +144,15 @@ func Sizes(root string) (map[string]Size, error) {
 	if err != nil {
 		return nil, err
 	}
-	sizesCache.root, sizesCache.at, sizesCache.val = root, time.Now(), out
+	if sizesCache.byRoot == nil {
+		sizesCache.byRoot = map[string]sizesEntry{}
+	}
+	for k, e := range sizesCache.byRoot {
+		if time.Since(e.at) >= sizesTTL {
+			delete(sizesCache.byRoot, k) // a root that is gone, or soon redone
+		}
+	}
+	sizesCache.byRoot[root] = sizesEntry{at: time.Now(), val: out}
 	return out, nil
 }
 

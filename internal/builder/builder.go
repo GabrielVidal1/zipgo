@@ -405,7 +405,7 @@ func hasIndex(s sites.Site) bool {
 // the back-office (admin). A folder without any of those only exists to hold
 // subdomains.
 func hasContent(s sites.Site) bool {
-	return s.Config.Admin || s.Config.Redirect != "" || s.Config.Rewrite != "" || hasIndex(s)
+	return s.Config.IsAdmin() || s.Config.Redirect != "" || s.Config.Rewrite != "" || hasIndex(s)
 }
 
 // served reports whether a site gets its normal route: it is not switched off
@@ -519,7 +519,7 @@ func childMeta(parent sites.Site, all []sites.Site) map[string]meta.Meta {
 		if !labelsEqual(c.Labels[1:], parent.Labels) {
 			continue
 		}
-		if c.Off() || !hasIndex(c) || c.Config.Protected() || c.Config.Admin {
+		if c.Off() || !hasIndex(c) || c.Config.Protected() || c.Config.IsAdmin() {
 			continue
 		}
 		m, err := meta.Extract(filepath.Join(c.Path, "index.html"))
@@ -763,7 +763,7 @@ func lockHandlers(s sites.Site, host, prefix string) arr {
 // features to flag.
 func flagsHandler(s sites.Site, host, prefix string) obj {
 	c := s.Config
-	if !c.HasFlags() || c.Admin {
+	if !c.HasFlags() || c.IsAdmin() {
 		return nil
 	}
 	h := obj{
@@ -850,7 +850,7 @@ func siteHeaders(c sites.Config) map[string]string {
 // layered on top: the back-office, a redirect, a proxied upstream, or its own
 // files. hsts says whether the site is HTTPS-only (see httpsOnly).
 func unguardedSiteHandler(s sites.Site, host, stripPrefix string, hsts bool) (obj, error) {
-	if s.Config.Admin {
+	if s.Config.IsAdmin() {
 		return adminHandler(s, host, stripPrefix, hsts)
 	}
 	if s.Config.Redirect != "" {
