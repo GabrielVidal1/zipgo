@@ -25,7 +25,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **Custom 404 page** — drop a `404.html` in a static site's folder and it becomes the body of its 404s
 - **Password-protected sites** — `zipgo password set <host>` puts a whole site behind a login page (one shared password, a session cookie); deploys keep the lock. `"basicAuth"` is there too for HTTP basic auth
 - **Switch a site off** — `zipgo off <host>` takes a deployed site down (410 Gone, nested subdomains included) without deleting it; `zipgo on <host>` brings it back
-- **Back-office** — `zipgo admin set admin.yourdomain.com` gives a domain a password-protected page, made for a phone, to switch any of its sites (sub and sub-sub domains included) off and on, flip their feature flags and put a password on one. It edits the same `.zipgoconfig.json` files the CLI does — no state of its own
+- **Back-office** — `zipgo admin set admin.yourdomain.com` gives a domain a password-protected page, made for a phone, to switch any of its sites (sub and sub-sub domains included) off and on, flip their feature flags and put a password on one; `--all` makes it the one page for every domain on the server. It edits the same `.zipgoconfig.json` files the CLI does — no state of its own
 - **Feature flags** — a site declares switches for unfinished features; its code reads them from `/__zipgo/flags.json`, zipgo answers 404 on the paths of the ones that are off, and you flip them from the back-office or `zipgo flag` — no redeploy, and deploys never flip them back
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
 - **Systemd integration** — `zipgo enable` sets up a user service that starts on boot
@@ -159,7 +159,8 @@ hides it). All keys are optional:
   "browse": false,                 // true → a folder with no index.html lists
                                    //   its files (default: 404; never on an SPA)
   "admin": false,                  // true → this folder is the back-office of
-                                   //   the site it is nested in (needs a
+                                   //   the site it is nested in; "all" → of
+                                   //   every domain on the server (needs a
                                    //   "password"; `zipgo admin set` writes both)
   "password": {                    // a login page in front of the whole site
     "hash": "$2a$12$Zkx19XLiW…",   //   *bcrypt hash* of the shared password
@@ -395,20 +396,28 @@ if (flags.coop) showCoopButton();
 
 ### Back-office
 
-A page to switch sites off and on from a phone, one per domain, behind the same
-login page:
+A page to switch sites off and on from a phone, behind the same login page —
+one per domain, or one for every domain on the server:
 
 ```bash
-zipgo admin set admin.yourdomain.com --generate   # prints the password once
-# → https://admin.yourdomain.com
+zipgo admin set admin.yourdomain.com --generate         # prints the password once
+# → https://admin.yourdomain.com manages yourdomain.com
+zipgo admin set admin.yourdomain.com --all --generate   # every domain instead
 ```
 
-<img src="./docs/admin.png" alt="zipgo back-office: the gabvdl.xyz tree" width="320">
+<img src="./docs/admin.png" alt="zipgo back-office: the gabvdl.xyz tree" width="320"> <img src="./docs/admin-all.png" alt="zipgo back-office of every domain: one row per domain" width="320">
 
 - It manages **the site its folder is nested in and every subdomain under it**:
   `admin.yourdomain.com` (folder `yourdomain.com/admin./`) lists the apex and
   every sub and sub-sub domain. Put one at `dev./admin./` and it manages
   `*.dev.yourdomain.com` only.
+- With **`--all`** (`"admin": "all"`) it manages **every domain in the domains
+  folder** instead: each domain is a root of the tree — folded by default, its
+  row says how many sites it holds and how many are off, and its switch takes
+  the whole domain off — and a row of domain chips narrows the page (counts
+  included) to one. The list view groups by domain. A domain folder added
+  later shows up on the next load. It can live on any host, even the apex of
+  a domain of its own.
 - Each site gets a **switch**. Off writes `"enable": false` into the site's
   `.zipgoconfig.json` — exactly what [`zipgo off`](#zipgo-off--zipgo-on)
   writes — so the site answers 410 and its nested subdomains go with it (they
@@ -700,18 +709,23 @@ second.
 ### `zipgo admin`
 
 Sets up a domain's [back-office](#back-office): writes `{"admin": true,
-"password": {…}}` into the host's `.zipgoconfig.json`, on the deploy target or
-in a local folder (`--dir`), with the same password flags as `zipgo password`.
+"password": {…}}` (`"admin": "all"` with `--all`) into the host's
+`.zipgoconfig.json`, on the deploy target or in a local folder (`--dir`), with
+the same password flags as `zipgo password`.
 
 ```bash
 zipgo admin set admin.yourdomain.com             # prompts twice
 zipgo admin set admin.yourdomain.com --generate  # make one up, print it once
 zipgo admin set admin.yourdomain.com --keep-password --days 30
+zipgo admin set admin.yourdomain.com --all --keep-password   # every domain
+zipgo admin set admin.yourdomain.com --scope site --keep-password  # back to one
 zipgo admin remove admin.yourdomain.com --yes    # take the back-office down
 ```
 
-Changing the password logs every open session out. `zipgo doctor` errors on an
-admin folder without a password, or on the apex.
+A `set` without `--all`/`--scope` keeps the back-office's scope (a password
+rotation never narrows it). Changing the password logs every open session out.
+`zipgo doctor` errors on an admin folder without a password, or on the apex of
+a one-domain back-office.
 
 ### `zipgo flag`
 

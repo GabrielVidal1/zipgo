@@ -152,6 +152,10 @@ Ordered roughly by value. Each item is one session of work.
       `enable` and `password` exactly as `zipgo off`/`zipgo password` do —
       no state of its own — fails closed without a password, and survives its
       parent being switched off. Shipped in `internal/admin`.
+- [x] One back-office for the whole server: `"admin": "all"`
+      (`zipgo admin set <host> --all`) lists every domain of the domains
+      folder as a root of the tree, with domain chips to narrow to one; the
+      per-domain `"admin": true` stays. Same no-state design (2026-10-28).
 - [ ] Unit tests for the discovery + builder core (`internal/sites`,
       `internal/builder`): the trailing-dot recursion, SPA detection,
       `enable:false`, and `rewrite` each get a table test. This is the safety net
