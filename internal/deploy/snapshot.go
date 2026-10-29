@@ -2,8 +2,6 @@ package deploy
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	"zipgo/internal/sites"
@@ -64,13 +62,11 @@ func snapshotScript(remoteDir string, keep int) string {
 // can't preserve history fails loudly rather than silently losing the ability to
 // roll back. keep <= 0 disables snapshotting entirely (the caller skips it).
 func snapshot(tgt Target, remoteDir string, keep int) error {
-	cmd := exec.Command("ssh", tgt.Host, snapshotScript(remoteDir, keep))
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	out, err := runRemote(tgt.Host, snapshotScript(remoteDir, keep), nil)
 	if err != nil {
 		return fmt.Errorf("snapshotting %q: %w", remoteDir, err)
 	}
-	if snap := strings.TrimSpace(string(out)); snap != "" {
+	if snap := strings.TrimSpace(out); snap != "" {
 		fmt.Printf("   ⏱  snapshot → %s\n", strings.TrimPrefix(snap, remoteDir+"/"))
 	}
 	return nil
