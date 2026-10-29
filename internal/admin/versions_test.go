@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"zipgo/internal/sites"
 )
@@ -39,6 +40,10 @@ func historyTree(t *testing.T) (domains, root string) {
 			t.Fatal(err)
 		}
 	}
+	idx := filepath.Join(root, filepath.FromSlash(v+"20261020T120000Z/index.html"))
+	if err := os.Chtimes(idx, deployedAt, deployedAt); err != nil {
+		t.Fatal(err)
+	}
 	return domains, root
 }
 
@@ -51,6 +56,9 @@ func read(t *testing.T, p string) string {
 	return string(b)
 }
 
+// deployedAt is the build time the tests give v2's index.html.
+var deployedAt = time.Date(2026, 10, 19, 21, 5, 0, 0, time.UTC)
+
 func TestVersions(t *testing.T) {
 	_, root := historyTree(t)
 	got, err := Versions(root, "app.")
@@ -60,8 +68,10 @@ func TestVersions(t *testing.T) {
 	if len(got) != 2 || got[0].Name != "20261020T120000Z" || got[1].Name != "20261001T080000Z" {
 		t.Fatalf("versions = %+v, want newest first", got)
 	}
-	if got[0].At.Format(stampLayout) != "20261020T120000Z" || got[0].Files != 4 {
-		t.Errorf("newest = %+v", got[0])
+	// A version is dated by its index.html (when it was deployed), not by
+	// the stamp of when it was replaced.
+	if !got[0].At.Equal(deployedAt) || got[0].Files != 4 {
+		t.Errorf("newest = %+v, want at %s", got[0], deployedAt)
 	}
 	if none, err := Versions(root, "old."); err != nil || len(none) != 0 {
 		t.Errorf("a site without history: %v, %v", none, err)
@@ -80,9 +90,13 @@ func TestRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// v2 is live, v3's own file is gone, v2's are back.
+	// v2 is live, v3's own file is gone, v2's are back — with their times,
+	// so the page still says when v2 was deployed.
 	if got := read(t, filepath.Join(app, "index.html")); got != "<title>v2</title>" {
 		t.Errorf("index.html = %q", got)
+	}
+	if fi, err := os.Stat(filepath.Join(app, "index.html")); err != nil || !fi.ModTime().Equal(deployedAt) {
+		t.Errorf("restored index.html mtime = %v, want %s", fi.ModTime(), deployedAt)
 	}
 	if read(t, filepath.Join(app, "old/only.txt")) != "gone in v3" || read(t, filepath.Join(app, "assets/app.js")) != "console.log(2)" {
 		t.Error("v2's files are not all back")

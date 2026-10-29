@@ -19,8 +19,11 @@ import (
 // swaps back in.
 type Version struct {
 	// Name is the snapshot folder's name, a UTC stamp ("20261029T140200Z",
-	// "-1" appended for a same-second retry). It is what a rollback names.
-	Name  string    `json:"name"`
+	// "-1" appended for a same-second retry) of when it was replaced. It is
+	// what a rollback names.
+	Name string `json:"name"`
+	// At is when that version was deployed: its index.html's time, the same
+	// clock as a Site's Modified.
 	At    time.Time `json:"at"`
 	Bytes int64     `json:"bytes"`
 	Files int       `json:"files"`
@@ -50,13 +53,10 @@ func Versions(root, id string) ([]Version, error) {
 			continue
 		}
 		v := Version{Name: e.Name()}
-		if len(v.Name) >= len(stampLayout) {
+		if info, err := os.Stat(filepath.Join(dir, sites.VersionsDirName, v.Name, "index.html")); err == nil {
+			v.At = info.ModTime().UTC()
+		} else if len(v.Name) >= len(stampLayout) {
 			v.At, _ = time.Parse(stampLayout, v.Name[:len(stampLayout)])
-		}
-		if v.At.IsZero() {
-			if info, err := e.Info(); err == nil {
-				v.At = info.ModTime().UTC()
-			}
 		}
 		_ = filepath.WalkDir(filepath.Join(dir, sites.VersionsDirName, v.Name), func(_ string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
@@ -201,7 +201,10 @@ func mkdirLike(dir, owner string) error {
 	return nil
 }
 
-// copyFile writes a copy of src at dst via a temporary file in tmpDir.
+// copyFile writes a copy of src at dst via a temporary file in tmpDir, keeping
+// its mtime as rsync -a does: a version keeps its deploy time (what the page
+// shows as "Deployed"), and a restored file's ETag still changes since its
+// size or time differ from what it replaces.
 func copyFile(src, dst, tmpDir, owner string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -226,6 +229,9 @@ func copyFile(src, dst, tmpDir, owner string) error {
 		return err
 	}
 	if err := os.Chmod(tmp, info.Mode().Perm()|0o444); err != nil {
+		return err
+	}
+	if err := os.Chtimes(tmp, time.Now(), info.ModTime()); err != nil {
 		return err
 	}
 	chownLike(tmp, owner)

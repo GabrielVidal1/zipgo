@@ -14,7 +14,7 @@ import (
 // past `zipgo deploy` before it overwrote the site.
 type Version struct {
 	Name     string `json:"name"`               // the snapshot folder name (a UTC timestamp)
-	Modified string `json:"modified,omitempty"` // RFC3339, UTC — when the snapshot was taken
+	Modified string `json:"modified,omitempty"` // RFC3339, UTC — when that version was deployed (its index.html)
 	Size     int64  `json:"sizeBytes"`
 	Files    int    `json:"files"`
 }
@@ -27,11 +27,14 @@ func Versions(target deploy.Target, host string) ([]Version, error) {
 		return nil, err
 	}
 	vdir := dir + "/" + sites.VersionsDirName
-	// One record per snapshot: name, mtime (epoch), bytes, file count.
+	// One record per snapshot: name, when it was deployed (its index.html's
+	// mtime, kept by rsync -a — the folder's own mtime is just a copy of the
+	// site folder's), bytes, file count.
 	script := "for s in " + quote(vdir) + "/*/; do\n" +
 		"  [ -d \"$s\" ] || continue\n" +
 		"  n=$(basename \"$s\")\n" +
-		"  mt=$(date -r \"$s\" '+%s' 2>/dev/null)\n" +
+		"  f=\"$s/index.html\"; [ -f \"$f\" ] || f=\"$s\"\n" +
+		"  mt=$(date -r \"$f\" '+%s' 2>/dev/null)\n" +
 		"  sz=$(find \"$s\" -type f -printf '%s\\n' 2>/dev/null | awk '{s+=$1} END{print s+0}')\n" +
 		"  nf=$(find \"$s\" -type f 2>/dev/null | wc -l | tr -d ' ')\n" +
 		"  printf '%s\\t%s\\t%s\\t%s\\n' \"$n\" \"$mt\" \"$sz\" \"$nf\"\n" +
@@ -81,9 +84,9 @@ func ListVersions(target deploy.Target, host string, asJSON bool) error {
 	for i, v := range versions {
 		tag := ""
 		if i == 0 {
-			tag = "  (current backup)"
-		} else if i == 1 {
-			tag = "  ← rollback target"
+			// The newest snapshot is what the last deploy replaced: what a
+			// bare `zipgo rollback <host>` puts back.
+			tag = "  ← zipgo rollback restores this"
 		}
 		when := v.Modified
 		if when == "" {
