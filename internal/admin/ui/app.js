@@ -444,13 +444,11 @@ function fillVersions(s) {
   const z = state.sizes && state.sizes[s.id];
   const files = (n) => `${n} file${n === 1 ? "" : "s"}`;
   const done = state.rolled && state.rolled.id === s.id ? state.rolled : null;
-  // Right after a rollback the live files and the copy of what they replaced
-  // carry the same time: say which is which.
-  const liveMeta = [done && done.from ? `the ${when(done.from)} deploy` : null, z ? `${bytes(z.bytes)} · ${files(z.files)}` : null].filter(Boolean);
+  const liveMeta = z ? `${bytes(z.bytes)} · ${files(z.files)}` : "";
   const items = [el("li", { class: "ver live" },
     el("div", { class: "ver-text" },
       el("span", { class: "ver-when" }, s.modified ? when(s.modified) : "Now", el("span", { class: "badge", text: "live" })),
-      el("span", { class: "ver-meta", text: liveMeta.join(" · ") || "what visitors get now" })))];
+      el("span", { class: "ver-meta", text: liveMeta || "what visitors get now" })))];
   if (done) {
     items.push(el("li", { class: "ver done" },
       el("span", { class: "ver-text ver-meta", text: done.text }),
@@ -481,7 +479,7 @@ async function rollback(s, v, ask) {
     const data = await api("api/rollback", { id: s.id, version: v.name });
     state.versions = { id: s.id, list: data.versions };
     state.rolled = ask
-      ? { id: s.id, text: `↩️ Back to ${when(v.at)}.`, backup: data.backup, from: v.at }
+      ? { id: s.id, text: `↩️ Back to ${when(v.at)}.`, backup: data.backup }
       : { id: s.id, text: "↪️ Undone: what was live before is back." };
     state.rolling = false;
     load(data);
