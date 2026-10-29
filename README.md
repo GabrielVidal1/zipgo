@@ -441,6 +441,8 @@ zipgo admin set admin.yourdomain.com --all --generate   # every domain instead
   only (the switch, the password and the flags stay as they are, nested
   subdomains are left alone), and what was live is kept as a version first, so
   the rollback has an **Undo**.
+
+  <img src="./docs/admin-versions.jpeg" alt="zipgo back-office: a site's versions right after a rollback, with its Undo" width="320">
 - It is **not a second source of truth**: it has no database, reads the folder
   tree on every request and writes `.zipgoconfig.json` files the watcher
   hot-reloads, so the page, the CLI and `zipgo ls` always agree. No upload and
