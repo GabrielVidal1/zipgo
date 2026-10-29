@@ -30,11 +30,22 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"zipgo/internal/sites"
 	"zipgo/internal/zipconfig"
 )
+
+// parseKeep parses the --keep value: a non-negative integer number of deploys
+// to retain (0 disables history).
+func parseKeep(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid --keep %q: expected a non-negative integer", s)
+	}
+	return n, nil
+}
 
 // Options is the parsed `zipgo deploy` invocation.
 type Options struct {
@@ -50,6 +61,12 @@ type Options struct {
 	// It defaults to false: nested subdomains are auto-excluded so deploying a
 	// parent host never wipes a child subdomain published under it.
 	IncludeSubdomains bool
+
+	// Keep is how many previous deploys to snapshot under each site's hidden
+	// .zipgo-versions folder before overwriting it, so `zipgo rollback` can swap
+	// an earlier one back in. Defaults to DefaultKeep; 0 disables history (no
+	// snapshot is taken). A --dry-run never snapshots.
+	Keep int
 
 	// Jobs is the resolved list of (host, source) pairs to deploy. It is filled
 	// by Resolve from the explicit flags and/or the project/root config, and is
@@ -282,6 +299,16 @@ func Run(o Options) error {
 			fmt.Printf("   ⚠️  the server's %s is unusable (%v) — left untouched\n", sites.ConfigFileName, st.Self.Err)
 		}
 
+		// Snapshot the site's current content into .zipgo-versions before the
+		// rsync overwrites it, so a bad deploy can be rolled back. A no-op on
+		// a first deploy (nothing there yet) or when history is disabled; a
+		// dry run never snapshots.
+		if !o.DryRun && o.Keep > 0 {
+			if err := snapshot(tgt, remoteDir, o.Keep); err != nil {
+				return err
+			}
+		}
+
 		if o.DryRun {
 			// Summarise exactly what would change before touching anything:
 			// run rsync with --itemize-changes, capture its output and bucket
@@ -478,6 +505,11 @@ func rsyncArgs(o Options, src, dest string, dryRun bool) []string {
 	args := []string{"-avz", "--safe-links"}
 	if o.Delete {
 		args = append(args, "--delete")
+		// Always protect the deploy-history folder from the mirror: the
+		// snapshots are not part of the build, and --delete would otherwise
+		// wipe the history on the very next deploy (even with
+		// --include-subdomains).
+		args = append(args, "--exclude="+versionsExclude)
 		// Auto-protect nested subdomain folders from the mirror: their
 		// trailing-dot directories are separate sites, not part of this build,
 		// so deploying a parent host must never delete a child.
@@ -507,7 +539,7 @@ func cmdErr(err error) error {
 // `deploy` subcommand). The local source directory is positional; -d may be
 // repeated to deploy the same build to several hosts.
 func ParseArgs(args []string) (Options, error) {
-	o := Options{Delete: true}
+	o := Options{Delete: true, Keep: DefaultKeep}
 
 	next := func(i *int, flag string) (string, error) {
 		*i++
@@ -556,6 +588,21 @@ func ParseArgs(args []string) (Options, error) {
 			o.Delete = true
 		case a == "--include-subdomains":
 			o.IncludeSubdomains = true
+		case a == "--keep":
+			v, err := next(&i, a)
+			if err != nil {
+				return o, err
+			}
+			if o.Keep, err = parseKeep(v); err != nil {
+				return o, err
+			}
+		case strings.HasPrefix(a, "--keep="):
+			var err error
+			if o.Keep, err = parseKeep(a[len("--keep="):]); err != nil {
+				return o, err
+			}
+		case a == "--no-history":
+			o.Keep = 0
 		case a == "--dry-run" || a == "-n":
 			o.DryRun = true
 		case strings.HasPrefix(a, "-"):

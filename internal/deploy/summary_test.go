@@ -108,9 +108,10 @@ func TestWriteSummary(t *testing.T) {
 }
 
 func TestRsyncArgs(t *testing.T) {
-	// Default (delete on, no subdomains): mirror with the subdomain guard.
+	// Default (delete on, no subdomains): mirror with the history and
+	// subdomain guards.
 	got := rsyncArgs(Options{Delete: true}, "dist/", "u@h:/d/", false)
-	want := []string{"-avz", "--safe-links", "--delete", "--exclude=" + subdomainExclude, "dist/", "u@h:/d/"}
+	want := []string{"-avz", "--safe-links", "--delete", "--exclude=" + versionsExclude, "--exclude=" + subdomainExclude, "dist/", "u@h:/d/"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("default args = %v, want %v", got, want)
 	}
@@ -128,6 +129,9 @@ func TestRsyncArgs(t *testing.T) {
 	got = rsyncArgs(Options{Delete: true, IncludeSubdomains: true, Excludes: []string{"*.map"}}, "dist/", "u@h:/d/", false)
 	if contains(got, "--exclude="+subdomainExclude) {
 		t.Errorf("--include-subdomains should drop the subdomain guard: %v", got)
+	}
+	if !contains(got, "--exclude="+versionsExclude) {
+		t.Errorf("--include-subdomains must keep the history guard: %v", got)
 	}
 	if !contains(got, "--exclude=*.map") {
 		t.Errorf("custom exclude missing: %v", got)

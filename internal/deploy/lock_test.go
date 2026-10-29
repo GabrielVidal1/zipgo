@@ -197,3 +197,55 @@ func TestWriteConfigCreatesTheFolder(t *testing.T) {
 		t.Errorf("temp files left: %v", left)
 	}
 }
+
+// A real deploy over an earlier one keeps it under .zipgo-versions — content
+// only, never the config — and a redeploy's mirror leaves the history alone.
+func TestRunKeepsHistory(t *testing.T) {
+	base := localDeploy(t)
+	site := filepath.Join(base, "example.com", "app.")
+	writeFiles(t, site, map[string]string{
+		sites.ConfigFileName: `{"flags": {"beta": false}}`,
+		"index.html":         "v1",
+		"old.js":             "v1 only",
+		"pb./index.html":     "child site",
+	})
+	deploy := func(body string) {
+		t.Helper()
+		src := t.TempDir()
+		writeFiles(t, src, map[string]string{"index.html": body})
+		o := Options{Delete: true, Keep: 2, SSH: "u@h:" + base, Jobs: []Job{{Host: "app.example.com", Src: src}}}
+		if err := Run(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Bodies of different sizes: rsync skips a same-size file with the same
+	// mtime, and these are all written within one second.
+	deploy("v2.")
+	deploy("v3..")
+	deploy("v4...")
+
+	vdir := filepath.Join(site, sites.VersionsDirName)
+	entries, err := os.ReadDir(vdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("kept %d versions, want 2 (--keep 2)", len(entries))
+	}
+	// Newest kept = v3 (what v4 replaced), and no config in a snapshot.
+	newest := filepath.Join(vdir, entries[len(entries)-1].Name())
+	if b, _ := os.ReadFile(filepath.Join(newest, "index.html")); string(b) != "v3.." {
+		t.Errorf("newest snapshot holds %q, want v3", b)
+	}
+	for _, p := range []string{sites.ConfigFileName, "pb."} {
+		if _, err := os.Stat(filepath.Join(newest, p)); !os.IsNotExist(err) {
+			t.Errorf("a snapshot must not hold %s", p)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(site, "index.html")); string(b) != "v4..." {
+		t.Errorf("live = %q, want v4", b)
+	}
+	if _, err := os.Stat(filepath.Join(site, "pb.", "index.html")); err != nil {
+		t.Error("the child site must survive the mirror")
+	}
+}
