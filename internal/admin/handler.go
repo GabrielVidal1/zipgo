@@ -204,6 +204,51 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request, _ caddyhttp.Ha
 			return nil
 		}
 		reply(w, out)
+	case "/api/versions":
+		if !allow(w, r, http.MethodGet) {
+			return nil
+		}
+		rt, id, err := a.locate(r.URL.Query().Get("id"))
+		var versions []Version
+		if err == nil {
+			versions, err = Versions(rt.Dir, id)
+		}
+		if err != nil {
+			fail(w, http.StatusBadRequest, err)
+			return nil
+		}
+		reply(w, map[string]any{"versions": versions})
+	case "/api/rollback":
+		if !allow(w, r, http.MethodPost) || !sameOrigin(w, r) {
+			return nil
+		}
+		var req struct {
+			ID      string `json:"id"`
+			Version string `json:"version"`
+		}
+		if !decode(w, r, &req) {
+			return nil
+		}
+		rt, id, err := a.locate(req.ID)
+		var backup string
+		if err == nil {
+			backup, err = Rollback(rt.Dir, a.TmpDir, a.Self, id, req.Version)
+		}
+		if err != nil {
+			fail(w, http.StatusBadRequest, err)
+			return nil
+		}
+		log.Printf("🛠  %s: %s rolled back to %s", a.name(), rt.hostOf(id), req.Version)
+		out, err := a.payload("")
+		if err == nil {
+			out["versions"], err = Versions(rt.Dir, id)
+		}
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err)
+			return nil
+		}
+		out["backup"] = backup
+		reply(w, out)
 	default:
 		a.asset(w, r, p)
 	}

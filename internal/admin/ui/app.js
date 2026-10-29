@@ -27,6 +27,9 @@ const state = {
   busy: new Set(),      // ids with a switch in flight
   busyFlags: new Set(), // "id\0name" of flags with a switch in flight
   sheet: null,          // id shown in the details sheet
+  versions: null,       // {id, list} — the sheet's site's kept deploys
+  rolled: null,         // {id, text, backup} — the last rollback, for its Undo
+  rolling: false,       // a rollback in flight
 };
 
 // ---- API ---------------------------------------------------------------------
@@ -350,10 +353,14 @@ function toast(msg, undo, err = false) {
 
 function openSheet(id) {
   state.sheet = id;
+  state.versions = null;
+  state.rolled = null;
   $("#generated").hidden = true;
   $("#lock-input").value = "";
   fillSheet();
   $("#sheet").showModal();
+  const s = state.byId.get(id);
+  if (s && keepsVersions(s)) loadVersions(id);
 }
 
 function fillSheet() {
@@ -375,6 +382,7 @@ function fillSheet() {
   if (s.configError) facts.push(["Config", s.configError]);
   $("#sheet-facts").replaceChildren(...facts.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
   fillFlags(s);
+  fillVersions(s);
 
   const lockable = !s.self && !s.configError && s.type !== "folder";
   $("#sheet-lock").hidden = !lockable;
@@ -405,6 +413,86 @@ function fillFlags(s) {
         disabled: busy, onclick: () => flipFlag(s.id, f.name, !f.on),
       }));
   }));
+}
+
+// ---- versions ----------------------------------------------------------------
+
+// Only a site that serves files of its own keeps deploys: a proxy, a redirect
+// or a folder of subdomains has nothing to snapshot.
+const keepsVersions = (s) => !s.self && (s.type === "static" || s.type === "spa");
+
+const when = (iso) => new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+async function loadVersions(id) {
+  try {
+    const data = await api("api/versions?id=" + encodeURIComponent(id));
+    if (state.sheet !== id) return;
+    state.versions = { id, list: data.versions };
+  } catch (e) {
+    if (state.sheet !== id) return;
+    state.versions = { id, list: [] };
+    toast(e.message, null, true);
+  }
+  fillSheet();
+}
+
+function fillVersions(s) {
+  const show = keepsVersions(s);
+  $("#sheet-versions").hidden = !show;
+  if (!show) return;
+  const vs = state.versions && state.versions.id === s.id ? state.versions.list : null;
+  const z = state.sizes && state.sizes[s.id];
+  const files = (n) => `${n} file${n === 1 ? "" : "s"}`;
+  const done = state.rolled && state.rolled.id === s.id ? state.rolled : null;
+  // Right after a rollback the live files and the copy of what they replaced
+  // carry the same time: say which is which.
+  const liveMeta = [done && done.from ? `the ${when(done.from)} deploy` : null, z ? `${bytes(z.bytes)} · ${files(z.files)}` : null].filter(Boolean);
+  const items = [el("li", { class: "ver live" },
+    el("div", { class: "ver-text" },
+      el("span", { class: "ver-when" }, s.modified ? when(s.modified) : "Now", el("span", { class: "badge", text: "live" })),
+      el("span", { class: "ver-meta", text: liveMeta.join(" · ") || "what visitors get now" })))];
+  if (done) {
+    items.push(el("li", { class: "ver done" },
+      el("span", { class: "ver-text ver-meta", text: done.text }),
+      done.backup ? el("button", { type: "button", disabled: state.rolling, text: "Undo",
+        onclick: () => rollback(s, { name: done.backup }, false) }) : null));
+  }
+  if (vs === null) items.push(el("li", { class: "ver-empty", text: "…" }));
+  else if (vs.length === 0) items.push(el("li", { class: "ver-empty", text: "No earlier deploy kept yet — the next zipgo deploy keeps this one." }));
+  else for (const v of vs) {
+    items.push(el("li", { class: "ver" },
+      el("div", { class: "ver-text" },
+        el("span", { class: "ver-when", text: when(v.at) }),
+        el("span", { class: "ver-meta", text: `${bytes(v.bytes)} · ${files(v.files)} · ` +
+          (done && v.name === done.backup ? "live until the rollback" : ago(v.at)) })),
+      el("button", { type: "button", disabled: state.rolling, text: "Roll back",
+        "aria-label": `Roll back to ${when(v.at)}`, onclick: () => rollback(s, v, true) })));
+  }
+  $("#ver-list").replaceChildren(...items);
+}
+
+// rollback puts v back live. What was live is kept as a new version (backup),
+// which the inline Undo rolls back to.
+async function rollback(s, v, ask) {
+  if (ask && !confirm(`Roll ${s.host} back to ${when(v.at)}?\nWhat is live now is kept, so it can be undone.`)) return;
+  state.rolling = true;
+  fillVersions(s);
+  try {
+    const data = await api("api/rollback", { id: s.id, version: v.name });
+    state.versions = { id: s.id, list: data.versions };
+    state.rolled = ask
+      ? { id: s.id, text: `↩️ Back to ${when(v.at)}.`, backup: data.backup, from: v.at }
+      : { id: s.id, text: "↪️ Undone: what was live before is back." };
+    state.rolling = false;
+    load(data);
+    state.sizes = null;
+    loadSizes();
+  } catch (e) {
+    toast(`${s.host}: ${e.message}`, null, true);
+  } finally {
+    state.rolling = false;
+    if (state.sheet === s.id) fillSheet();
+  }
 }
 
 async function lock(action, password) {

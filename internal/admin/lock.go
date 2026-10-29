@@ -128,6 +128,9 @@ func Sizes(root string) (map[string]Size, error) {
 			return nil // an unreadable corner shouldn't hide every size
 		}
 		if d.IsDir() {
+			if d.Name() == sites.VersionsDirName {
+				return filepath.SkipDir // past deploys, not what the site serves
+			}
 			return nil
 		}
 		info, err := d.Info()

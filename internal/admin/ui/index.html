@@ -49,6 +49,11 @@
     <p class="muted">What the site's code reads from <code>/__zipgo/flags.json</code>. A flag that is off also closes its paths (404). Deploys never flip them.</p>
     <ul class="flag-list" id="flag-list"></ul>
   </section>
+  <section class="versions" id="sheet-versions" hidden>
+    <h3>Versions</h3>
+    <p class="muted">Each deploy keeps the one it replaces. Rolling back swaps the files only — the switch, password and flags stay — and keeps what was live, so it can be undone.</p>
+    <ul class="ver-list" id="ver-list"></ul>
+  </section>
   <section class="lock" id="sheet-lock">
     <h3>Password</h3>
     <p class="muted" id="lock-state"></p>

@@ -26,7 +26,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **Password-protected sites** — `zipgo password set <host>` puts a whole site behind a login page (one shared password, a session cookie); deploys keep the lock. `"basicAuth"` is there too for HTTP basic auth
 - **Switch a site off** — `zipgo off <host>` takes a deployed site down (410 Gone, nested subdomains included) without deleting it; `zipgo on <host>` brings it back
 - **Deploy history & rollback** — every `zipgo deploy` keeps the site's previous content (last 5, `--keep N`) in a hidden `.zipgo-versions/` folder; `zipgo rollback <host>` puts the previous deploy back, reversibly
-- **Back-office** — `zipgo admin set admin.yourdomain.com` gives a domain a password-protected page, made for a phone, to switch any of its sites (sub and sub-sub domains included) off and on, flip their feature flags and put a password on one; `--all` makes it the one page for every domain on the server. It edits the same `.zipgoconfig.json` files the CLI does — no state of its own
+- **Back-office** — `zipgo admin set admin.yourdomain.com` gives a domain a password-protected page, made for a phone, to switch any of its sites (sub and sub-sub domains included) off and on, flip their feature flags, put a password on one and roll one back to an earlier deploy; `--all` makes it the one page for every domain on the server. It edits the same `.zipgoconfig.json` files the CLI does — no state of its own
 - **Feature flags** — a site declares switches for unfinished features; its code reads them from `/__zipgo/flags.json`, zipgo answers 404 on the paths of the ones that are off, and you flip them from the back-office or `zipgo flag` — no redeploy, and deploys never flip them back
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
 - **Systemd integration** — `zipgo enable` sets up a user service that starts on boot
@@ -434,10 +434,18 @@ zipgo admin set admin.yourdomain.com --all --generate   # every domain instead
 - Tapping a site opens its details and its **password**: set one, generate
   one (shown once), change it or take it off — the `password` block that
   [`zipgo password`](#zipgo-password) writes, so deploys keep it too.
+- A site that serves files lists its **versions**: what is live, then the
+  deploys [`zipgo deploy`](#zipgo-deploy) kept in `.zipgo-versions/`, newest
+  first, with their size. **Roll back** puts one back — what
+  [`zipgo rollback`](#zipgo-rollback) does, on the server's own disk: the files
+  only (the switch, the password and the flags stay as they are, nested
+  subdomains are left alone), and what was live is kept as a version first, so
+  the rollback has an **Undo**.
 - It is **not a second source of truth**: it has no database, reads the folder
   tree on every request and writes `.zipgoconfig.json` files the watcher
   hot-reloads, so the page, the CLI and `zipgo ls` always agree. No upload and
-  no delete: deploys stay `zipgo deploy`'s job.
+  no delete: deploys stay `zipgo deploy`'s job (a rollback only puts back what
+  a deploy kept).
 - It **fails closed**: an `"admin": true` folder without a `password` answers
   `403` and serves nothing. It can't switch itself off, and it is **not**
   taken down when its parent is switched off — it is how the domain gets

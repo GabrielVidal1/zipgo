@@ -197,7 +197,8 @@ Ordered roughly by value. Each item is one session of work.
       folder is hidden from the file_server, protected from the `--delete`
       mirror, and excluded from `ls`/`info` sizes; a rollback never restores an
       old config (switch, lock and flags stay as the server has them). Name
-      lives once in `sites.VersionsDirName` (2026-10-29, PR #1).
+      lives once in `sites.VersionsDirName`. The back-office lists a site's
+      versions with a Roll back button (and an Undo) — 2026-10-29, PR #1.
 - [ ] Landing-page refresh — the generated index at the apex when no site is
       deployed should use the same `sub-domains-meta` metadata the API already
       computes, so it stops being a separate code path.
