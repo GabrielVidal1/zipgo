@@ -6,3 +6,4 @@ vince
 .mcp.json
 
 .env
+bench/results/

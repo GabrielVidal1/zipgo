@@ -24,8 +24,12 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    pids_limit: 256
+    # Go adds OS threads under load (blocking file reads), each one a pid:
+    # leave headroom. GOMEMLIMIT keeps the garbage collector ahead of the cap.
+    pids_limit: 1024
     mem_limit: 512m
+    environment:
+      GOMEMLIMIT: 460MiB
     restart: unless-stopped
 
 volumes:
