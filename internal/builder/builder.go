@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"zipgo/internal/fingerprint"
 	"zipgo/internal/flags"
 	"zipgo/internal/gate"
 	"zipgo/internal/meta"
@@ -23,6 +24,10 @@ import (
 	// Modules this package emits are linked here, where they are emitted, so a
 	// generated config can never name one the binary lacks (the tests load the
 	// config in real Caddy to prove it):
+	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/encode"        // http.handlers.encode (encodeHandler)
+	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/encode/brotli" // http.precompressed.br (precompressed)
+	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/encode/gzip"   // http.encoders.gzip + http.precompressed.gzip
+	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/encode/zstd"   // http.encoders.zstd (encodeHandler)
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/proxyprotocol" // caddy.listeners.proxy_protocol (withProxyProtocol)
 	_ "github.com/caddyserver/caddy/v2/modules/logging"                 // caddy.logging.encoders.filter (accessLogging)
 )
@@ -146,6 +151,24 @@ func TrustedProxies() []string {
 		return l
 	}
 	return ProxyProtocolAllow()
+}
+
+// HTTP3 reports whether the HTTPS server speaks HTTP/3 (QUIC, over UDP 443)
+// and advertises it with an Alt-Svc header. ZIPGO_HTTP3=on|off decides; unset,
+// it is on unless zipgo sits behind a PROXY-protocol proxy
+// (ZIPGO_PROXY_PROTOCOL_ALLOW): such a proxy relays TCP, so QUIC never reaches
+// zipgo, and advertising it only makes every new visitor's browser try a UDP
+// handshake that times out before it settles on TCP. Forwarding UDP 443 past
+// the proxy instead would skip whatever the proxy enforces (an edge geo-fence,
+// connection caps).
+func HTTP3() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZIPGO_HTTP3"))) {
+	case "on", "1", "true", "yes":
+		return true
+	case "off", "0", "false", "no":
+		return false
+	}
+	return len(ProxyProtocolAllow()) == 0
 }
 
 // RewriteAllow returns the upstream patterns a site's "rewrite" may point at,
@@ -674,6 +697,9 @@ func BuildConfig(domainSites []DomainSites, metricsAddr, logFormat string) (*cad
 			"routes": httpRoutes,
 		},
 	}
+	if !HTTP3() {
+		servers["https"].(obj)["protocols"] = arr{"h1", "h2"}
+	}
 	// Domain mode only: in localhost mode nothing sits in front of zipgo.
 	withProxyProtocol(servers, ProxyProtocolAllow())
 	withTrustedProxies(servers, TrustedProxies())
@@ -708,9 +734,85 @@ func domainRoute(s sites.Site, host string) (obj, error) {
 	}
 	return obj{
 		"match":    arr{obj{"host": arr{host}}},
-		"handle":   arr{h},
+		"handle":   withEncode(s, h),
 		"terminal": true,
 	}, nil
+}
+
+// withEncode puts the on-the-fly compression handler (encodeHandler) in front
+// of a site's handler, unless the site opted out with "compress": false.
+func withEncode(s sites.Site, h obj) arr {
+	if !s.Config.Compressed() {
+		return arr{h}
+	}
+	return arr{encodeHandler(), h}
+}
+
+// encodeHandler compresses a response on the fly — zstd, else gzip, whichever
+// the client accepts — when nothing else did: a file the deploy shipped a
+// pre-compressed sibling for goes out as that sibling (Content-Encoding is then
+// already set and the encoder steps aside), so this is the fallback for files
+// deployed without one and for a proxied upstream's JSON. Caddy only compresses
+// text-like types (HTML, CSS, JS, JSON, SVG, wasm…), never an event stream, and
+// skips bodies under minimum_length, where the frame costs more than it saves.
+func encodeHandler() obj {
+	return obj{
+		"handler":        "encode",
+		"encodings":      obj{"zstd": obj{}, "gzip": obj{}},
+		"prefer":         arr{"zstd", "gzip"},
+		"minimum_length": 1024,
+	}
+}
+
+// precompressed makes a file_server answer a request for app.js with
+// app.js.br or app.js.gz when the client accepts that encoding and the sibling
+// exists: compressed once, at deploy time (zipgo deploy writes them), with no
+// CPU spent per request. Brotli first, it is the smaller of the two.
+func precompressed(fs obj) obj {
+	fs["precompressed"] = obj{"br": obj{}, "gzip": obj{}}
+	fs["precompressed_order"] = arr{"br", "gzip"}
+	return fs
+}
+
+// Cache-Control values for a site's own files. A fingerprinted file (a build's
+// hashed output, see internal/fingerprint) never changes under its name, so
+// browsers keep it a year without asking again. Everything else — index.html
+// first — is revalidated on every use: a cheap 304 against the ETag Caddy
+// sends, and a deploy is visible at once instead of after whatever heuristic
+// lifetime a browser picks for a response with no Cache-Control.
+const (
+	immutableCache  = "public, max-age=31536000, immutable"
+	revalidateCache = "no-cache"
+)
+
+// immutableRoute marks a fingerprinted file immutable. It matches only a file
+// that exists (the file matcher), and the header is only set on a 2xx or 304,
+// so neither an SPA's index.html fallback for a stale hashed URL nor a 404 is
+// ever cached for a year under that URL.
+func immutableRoute(root string) obj {
+	return obj{
+		"match": arr{obj{
+			fingerprint.MatcherName: obj{},
+			"file":                  obj{"root": root, "try_files": arr{"{http.request.uri.path}"}},
+		}},
+		"handle": arr{obj{
+			"handler": "headers",
+			"response": obj{
+				"set":     obj{"Cache-Control": arr{immutableCache}},
+				"require": obj{"status_code": arr{2, 304}},
+			},
+		}},
+	}
+}
+
+// hasHeader reports whether a site's headers map names header (any case).
+func hasHeader(m map[string]string, header string) bool {
+	for k := range m {
+		if strings.EqualFold(strings.TrimSpace(k), header) {
+			return true
+		}
+	}
+	return false
 }
 
 // siteHandler builds the handler for a single site: a redirect subroute when the
@@ -1144,7 +1246,7 @@ func BuildLocalhostConfig(domainSites []DomainSites, metricsAddr, logFormat stri
 
 			routes = append(routes, obj{
 				"match":    arr{obj{"path": arr{pathPrefix, pathPrefix + "/*"}}},
-				"handle":   arr{h},
+				"handle":   withEncode(s, h),
 				"terminal": true,
 			})
 		}
@@ -1203,7 +1305,18 @@ type fileOpts struct {
 // sites fall back to index.html for unmatched paths. A custom 404 page, when
 // the site has one, replaces Caddy's plain-text 404 body.
 func fileHandler(root string, o fileOpts) obj {
-	routes := arr{obj{"handle": arr{securityHeaders(o.frameAncestors, o.headers, o.hsts)}}}
+	// A site that sets its own Cache-Control (or a locked site, whose
+	// lockedHeaders do) keeps it on every file; otherwise files are
+	// revalidated and fingerprinted ones are immutable.
+	headers, immutable := o.headers, false
+	if !hasHeader(o.headers, "Cache-Control") {
+		headers = map[string]string{"Cache-Control": revalidateCache}
+		for k, v := range o.headers {
+			headers[k] = v
+		}
+		immutable = true
+	}
+	routes := arr{obj{"handle": arr{securityHeaders(o.frameAncestors, headers, o.hsts)}}}
 
 	if o.stripPrefix != "" {
 		routes = append(routes, obj{"handle": arr{obj{
@@ -1213,11 +1326,14 @@ func fileHandler(root string, o fileOpts) obj {
 	}
 
 	routes = append(routes, dotfileRoute())
+	if immutable {
+		routes = append(routes, immutableRoute(root))
+	}
 
 	hide, notFound := o.hide, o.notFound
 	if o.spa {
-		spaServer := obj{"handler": "file_server", "root": root, "index_names": arr{"index.html"}}
-		fallbackServer := obj{"handler": "file_server", "root": root}
+		spaServer := precompressed(obj{"handler": "file_server", "root": root, "index_names": arr{"index.html"}})
+		fallbackServer := precompressed(obj{"handler": "file_server", "root": root})
 		if len(hide) > 0 {
 			spaServer["hide"] = toArr(hide)
 			fallbackServer["hide"] = toArr(hide)
@@ -1239,11 +1355,11 @@ func fileHandler(root string, o fileOpts) obj {
 			}},
 		)
 	} else {
-		fs := obj{
+		fs := precompressed(obj{
 			"handler":     "file_server",
 			"root":        root,
 			"index_names": arr{"index.html", "index.htm"},
-		}
+		})
 		if o.browse {
 			fs["browse"] = obj{}
 		}
@@ -1269,11 +1385,11 @@ func fileHandler(root string, o fileOpts) obj {
 // The security-headers handler has already run on the way in, so the custom page
 // goes out with the same headers as every other response from the site.
 func notFoundErrors(root string, hide []string, notFound string) obj {
-	fs := obj{
+	fs := precompressed(obj{
 		"handler":     "file_server",
 		"root":        root,
 		"status_code": "404",
-	}
+	})
 	if len(hide) > 0 {
 		fs["hide"] = toArr(hide)
 	}

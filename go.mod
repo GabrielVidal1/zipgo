@@ -5,6 +5,7 @@ go 1.27.0
 toolchain go1.27.3
 
 require (
+	github.com/andybalholm/brotli v1.2.8
 	github.com/caddyserver/caddy/v2 v2.11.7
 	github.com/fsnotify/fsnotify v1.9.0
 	golang.org/x/crypto v0.58.0

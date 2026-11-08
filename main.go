@@ -66,6 +66,9 @@ configured project deploys with just 'zipgo deploy':
                  folders (by default trailing-dot subdomain dirs are kept)
       --keep N   keep the last N deploys under .zipgo-versions for rollback
                  (default 5); --no-history / --keep 0 disables snapshots
+      --no-precompress  don't ship .br/.gz siblings of the build's text files
+                 (by default each .js/.css/.html/.json/.svg/.wasm… gets both,
+                 so the server sends them compressed at no CPU cost)
   -n, --dry-run  preview only: print exactly which remote files would be
                  added, replaced and deleted, and change nothing
 

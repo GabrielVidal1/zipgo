@@ -342,7 +342,9 @@ func TestBuildConfigHardening(t *testing.T) {
 	// HSTS: every HTTPS-only site, including a switched-off one and a
 	// password site whatever its allowHttp; not a site served on :80.
 	hsts := func(host string) bool {
-		raw, _ := json.Marshal(routeFor(t, routes, host)["handle"].([]any)[0])
+		// The site's handler is the last one: the encode handler goes first.
+		handle := routeFor(t, routes, host)["handle"].([]any)
+		raw, _ := json.Marshal(handle[len(handle)-1])
 		var h obj
 		if err := json.Unmarshal(raw, &h); err != nil {
 			t.Fatal(err)

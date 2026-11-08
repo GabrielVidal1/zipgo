@@ -68,6 +68,10 @@ type Options struct {
 	// snapshot is taken). A --dry-run never snapshots.
 	Keep int
 
+	// NoPrecompress skips writing the .br/.gz siblings of the build's text
+	// files (see Precompress); the server then compresses them on the fly.
+	NoPrecompress bool
+
 	// Jobs is the resolved list of (host, source) pairs to deploy. It is filled
 	// by Resolve from the explicit flags and/or the project/root config, and is
 	// what Run iterates.
@@ -309,13 +313,29 @@ func Run(o Options) error {
 			}
 		}
 
+		// The build's .br/.gz siblings, shipped from a temp folder alongside
+		// the source (a dry run makes them too, so its summary is the real one).
+		var extra []string
+		if !o.NoPrecompress {
+			pre, err := Precompress(job.Src)
+			if err != nil {
+				return err
+			}
+			defer os.RemoveAll(pre.Dir)
+			extra = append(extra, strings.TrimRight(pre.Dir, "/")+"/")
+			jo.Excludes = append(append([]string{}, jo.Excludes...), siblingExcludes(o.Excludes)...)
+			if pre.Files > 0 {
+				fmt.Printf("   ⚡ %d files precompressed: %s → %s brotli\n", pre.Files, humanBytes(pre.Raw), humanBytes(pre.Br))
+			}
+		}
+
 		if o.DryRun {
 			// Summarise exactly what would change before touching anything:
 			// run rsync with --itemize-changes, capture its output and bucket
 			// each line into added/replaced/deleted. No remote mkdir — a
 			// missing destination just makes every path show up as "added",
 			// which is the right first-deploy summary.
-			out, err := exec.Command("rsync", rsyncArgs(jo, src, dest, true)...).Output()
+			out, err := exec.Command("rsync", rsyncArgs(jo, src, dest, true, extra...)...).Output()
 			if err != nil {
 				return fmt.Errorf("rsync dry-run to %q: %w", host, cmdErr(err))
 			}
@@ -324,7 +344,7 @@ func Run(o Options) error {
 			continue
 		}
 
-		rsync := exec.Command("rsync", rsyncArgs(jo, src, dest, false)...)
+		rsync := exec.Command("rsync", rsyncArgs(jo, src, dest, false, extra...)...)
 		rsync.Stdout, rsync.Stderr = os.Stdout, os.Stderr
 		if err := rsync.Run(); err != nil {
 			return fmt.Errorf("rsync to %q: %w", host, err)
@@ -496,8 +516,10 @@ func sameJSON(a, b []byte) bool {
 // the summary mode used by --dry-run: --dry-run to touch nothing and
 // --itemize-changes so the output can be parsed by ParseItemized. It is split
 // out so the flag→arg mapping (delete/exclude/subdomain-protection) can be
-// unit-tested without shelling out.
-func rsyncArgs(o Options, src, dest string, dryRun bool) []string {
+// unit-tested without shelling out. extra are more source folders merged into
+// the same destination after src (the precompressed siblings): rsync mirrors
+// their union, so --delete keeps what any of them holds.
+func rsyncArgs(o Options, src, dest string, dryRun bool, extra ...string) []string {
 	// --safe-links: a symlink that points outside the deployed tree is not
 	// shipped. The server hides such a link anyway (it would otherwise serve
 	// whatever it points at), so leaving it out of the transfer just makes
@@ -523,7 +545,9 @@ func rsyncArgs(o Options, src, dest string, dryRun bool) []string {
 	if dryRun {
 		args = append(args, "--dry-run", "--itemize-changes")
 	}
-	return append(args, src, dest)
+	args = append(args, src)
+	args = append(args, extra...)
+	return append(args, dest)
 }
 
 // cmdErr enriches an *exec.ExitError with the stderr rsync captured, since
@@ -603,6 +627,8 @@ func ParseArgs(args []string) (Options, error) {
 			}
 		case a == "--no-history":
 			o.Keep = 0
+		case a == "--no-precompress":
+			o.NoPrecompress = true
 		case a == "--dry-run" || a == "-n":
 			o.DryRun = true
 		case strings.HasPrefix(a, "-"):
