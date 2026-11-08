@@ -1,0 +1,33 @@
+# zipgo bench — a throwaway PocketBase behind a zipgo "rewrite", so the API
+# scenarios hit a real backend without touching a real app's data.
+#
+# bench/setup.sh copies this folder to the server (~/services/bench-pocketbase
+# on raspy2) and starts it; bench/teardown.sh removes it, data included.
+# It mirrors how the real apps run there: the same image, non-root, no
+# capabilities, the same memory cap, on the network zipgo is on.
+services:
+  pocketbase:
+    image: ghcr.io/muchobien/pocketbase:0.39.3
+    container_name: bench-pocketbase # zipgo dials bench-pocketbase:8090
+    restart: "no"
+    user: "10001:1000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    environment:
+      GOMEMLIMIT: 220MiB
+      # The api-write scenario's X-Bench-Key: the collection's create rule
+      # asks for it, so the public host is not an open write endpoint.
+      BENCH_KEY: ${BENCH_KEY:?set BENCH_KEY in .env}
+    volumes:
+      - ./pb_data:/pb_data
+      - ./pb_migrations:/pb_migrations
+    networks: [zipgo]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8090"]
+      interval: 30s
+
+networks:
+  zipgo:
+    name: ${BENCH_NETWORK:-services_default}
+    external: true

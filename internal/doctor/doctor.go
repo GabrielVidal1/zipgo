@@ -114,6 +114,7 @@ var knownConfigKeys = map[string]bool{
 	"admin":                  true,
 	"flags":                  true,
 	"browse":                 true,
+	"compress":               true,
 }
 
 // knownPasswordKeys are the keys of the "password" block.
@@ -121,7 +122,7 @@ var knownPasswordKeys = map[string]bool{"hash": true, "title": true, "sessionDay
 
 // knownKeyList is the human list of keys printed as a hint next to an unknown
 // key, in a stable order.
-const knownKeyList = "enable, rewrite, rewritePath, rewritePathPassthrough, redirect, redirectStatus, allowHttp, basicAuth, password, headers, admin, flags"
+const knownKeyList = "enable, rewrite, rewritePath, rewritePathPassthrough, redirect, redirectStatus, allowHttp, basicAuth, password, headers, admin, flags, browse, compress"
 
 // knownFlagKeys are the keys of a flag written as an object.
 var knownFlagKeys = map[string]bool{"on": true, "description": true, "paths": true}

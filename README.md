@@ -28,6 +28,7 @@ A minimal static site host powered by [Caddy](https://caddyserver.com/) and Go. 
 - **Deploy history & rollback** — every `zipgo deploy` keeps the site's previous content (last 5, `--keep N`) in a hidden `.zipgo-versions/` folder; `zipgo rollback <host>` puts the previous deploy back, reversibly
 - **Back-office** — `zipgo admin set admin.yourdomain.com` gives a domain a password-protected page, made for a phone, to switch any of its sites (sub and sub-sub domains included) off and on, flip their feature flags, put a password on one and roll one back to an earlier deploy; `--all` makes it the one page for every domain on the server. It edits the same `.zipgoconfig.json` files the CLI does — no state of its own
 - **Feature flags** — a site declares switches for unfinished features; its code reads them from `/__zipgo/flags.json`, zipgo answers 404 on the paths of the ones that are off, and you flip them from the back-office or `zipgo flag` — no redeploy, and deploys never flip them back
+- **Fast by default** — `zipgo deploy` ships brotli/gzip copies of every text file, so pages go out ~3× smaller at no CPU cost (anything else is compressed on the fly); a bundler's hashed files are cached a year, everything else revalidated, so a deploy shows at once — see [Performance](#performance)
 - **Localhost mode** — no domain needed; all sites served on a single port (`9000`) with path routing
 - **Systemd integration** — `zipgo enable` sets up a user service that starts on boot
 
@@ -159,6 +160,8 @@ hides it). All keys are optional:
   },                               //   security headers zipgo already sends
   "browse": false,                 // true → a folder with no index.html lists
                                    //   its files (default: 404; never on an SPA)
+  "compress": true,                // false → no on-the-fly compression for
+                                   //   this site (see Performance)
   "admin": false,                  // true → this folder is the back-office of
                                    //   the site it is nested in; "all" → of
                                    //   every domain on the server (needs a
@@ -513,7 +516,9 @@ zipgo deploy dist/ -d love-letters.game.gabvdl.xyz \
 `--delete`/`--prune` (mirror — delete remote files missing from the source;
 this is the default, `--prune` is just a clearer name for it), `--no-delete`
 (keep them), `--include-subdomains` (let the mirror also delete nested
-trailing-dot subdomain folders; by default they're protected), `-n/--dry-run`.
+trailing-dot subdomain folders; by default they're protected),
+`--no-precompress` (don't ship `.br`/`.gz` copies, see [Performance](#performance)),
+`-n/--dry-run`.
 
 A deploy ships **files, never server state**: a site that is
 [switched off](#zipgo-off--zipgo-on) stays off and a
@@ -864,6 +869,7 @@ good config. `doctor` is the fastest way to find which file it is.
 | `ZIPGO_PROXY_PROTOCOL_ALLOW` | _(off)_ | Comma-separated CIDRs allowed to send a PROXY header (see below) |
 | `ZIPGO_TRUSTED_PROXIES` | _(= the PROXY list)_ | Comma-separated CIDRs whose `X-Forwarded-For` is believed (see below) |
 | `ZIPGO_REWRITE_ALLOW`   | _(off = any)_ | Comma-separated globs over `host:port`; a `rewrite` upstream not listed answers 403 (see *Security*) |
+| `ZIPGO_HTTP3`           | _(auto)_  | `on`/`off`. Unset: HTTP/3 is on, unless `ZIPGO_PROXY_PROTOCOL_ALLOW` is set (a TCP proxy in front never forwards QUIC) — see *Performance* |
 
 If the domains folder contains no valid domain folders, zipgo automatically falls back to localhost mode.
 
@@ -940,6 +946,47 @@ Off by default (no per-request logging, only Caddy errors). The loopback metrics
 server is excluded, so Prometheus scrapes don't flood the request stream.
 
 ---
+
+## Performance
+
+Three things zipgo does for every site, so a small box serves more visitors:
+
+**Compression, done at deploy time.** `zipgo deploy` writes a brotli and a gzip
+copy next to every text-like file of the build — `assets/app.js` ships with
+`assets/app.js.br` and `assets/app.js.gz` (HTML, CSS, JS, JSON, SVG, wasm, fonts
+in ttf/otf, source maps…) — and the server answers with the copy the browser
+accepts. A typical Vite build goes out about 3× smaller, compressed once at
+brotli's best level on the machine that deploys, instead of on the server for
+every request. The copies are made in a temporary folder, never in your build
+directory, and the `--delete` mirror removes them along with their file.
+`--no-precompress` turns it off for a deploy. Anything without a copy — a site
+uploaded another way, a proxied API's JSON — is compressed on the fly (zstd or
+gzip, text types, bodies of 1 KiB and up). A site whose upstream misbehaves
+behind a compressor sets `"compress": false` in its `.zipgoconfig.json`.
+
+**Caching that is right after a deploy.** A file whose name carries a bundler's
+content hash — `assets/index-F6vy2umU.js` (Vite, Rollup, esbuild),
+`static/js/main.3f9a1c2b7d4e5f60.js` (webpack), inside an `assets/`, `static/`,
+`_app/immutable/`, `_next/`, `build/` or `dist/` folder — is sent with
+`Cache-Control: public, max-age=31536000, immutable`: browsers keep it a year
+and never ask again, since a new build gives it a new name. Every other file,
+`index.html` first, gets `Cache-Control: no-cache`: the browser asks each time
+and gets a bodiless 304 when nothing changed, so a deploy is visible at once
+instead of after whatever lifetime a browser guesses for a response with no
+caching header. The hash test errs on the safe side (a hashed file it misses
+just costs a 304). A site that sets its own `Cache-Control` in `headers` keeps
+it on every file, and a password-protected site keeps `private, no-cache`.
+
+**No HTTP/3 behind a TCP proxy.** HTTP/3 runs over UDP, which a TCP passthrough
+in front of zipgo doesn't carry. Advertising it anyway (`Alt-Svc: h3`) makes
+every new visitor's browser try a QUIC handshake that can't succeed before it
+settles on TCP. So when `ZIPGO_PROXY_PROTOCOL_ALLOW` says there is such a proxy,
+zipgo speaks HTTP/1.1 and HTTP/2 only. `ZIPGO_HTTP3=on|off` overrides it.
+
+**How many visitors can my box take?** [`bench/`](bench/README.md) is a load
+test for a zipgo host: it puts a copy of a real site and a throwaway
+PocketBase on it, steps the load up with k6 until it stops keeping up, and
+reports where each kind of traffic breaks and what ran out.
 
 ## Docker
 

@@ -125,6 +125,16 @@ The install scripts (`domains/zipgo.xyz/install/{linux,macos,windows}.sh`) are *
 | `ZIPGO_PROXY_PROTOCOL_ALLOW` | _(off)_ | CIDRs allowed to send a PROXY v2 header (a TCP passthrough in front) |
 | `ZIPGO_TRUSTED_PROXIES` | _(= the PROXY list)_ | CIDRs whose `X-Forwarded-For` is believed (the :80 / re-encrypted hops) |
 | `ZIPGO_REWRITE_ALLOW`  | _(off = any)_ | Comma-separated globs over `host:port`; a `rewrite` upstream not listed answers 403 |
+| `ZIPGO_HTTP3`          | _(auto)_ | `on`/`off`; unset = on unless `ZIPGO_PROXY_PROTOCOL_ALLOW` is set (`HTTP3()`; off → `protocols: [h1, h2]`, no Alt-Svc) |
+
+## Compression & caching (`internal/builder`, `internal/fingerprint`, `internal/deploy/precompress.go`)
+
+README → *Performance* is the user-facing side; keep them in sync.
+
+- **Pre-compressed siblings** — `deploy.Precompress(src)` walks the build (skipping dotfiles/dot-dirs, trailing-dot nested sites, symlinks) and writes `<file>.br` + `<file>.gz` for every `compressibleExt` file into a **temp folder** mirroring the source; `rsyncArgs(..., extra...)` ships it as a second rsync source into the same destination, so the `--delete` mirror deletes a sibling with its file. Every compressible file gets both siblings however small (a stale sibling would be served in place of its file), a sibling the build made itself is kept, and siblings keep a **fresh mtime** on purpose: stamped with the file's mtime, a same-size sibling passes rsync's quick check and stays stale (`TestRunShipsSiblings` pins the case). `siblingExcludes` extends the user's `--exclude` patterns to the siblings. Brotli via `github.com/andybalholm/brotli` (q11 ≤ 1 MiB, q9 ≤ 8 MiB, else 6). `--no-precompress` = `Options.NoPrecompress`.
+- **Serving** — every `file_server` the builder emits goes through `precompressed()` (`br`, then `gzip`); every site route starts with `encodeHandler()` (zstd/gzip, `minimum_length` 1024, Caddy's default text-type matcher, which already skips `text/event-stream`) via `withEncode`, unless `"compress": false` (`Config.Compressed()`). Encode steps aside when Content-Encoding is already set, which is how a served sibling and an upstream's own compression pass through. The encode/brotli/gzip/zstd modules are imported **by the builder** (same rule as proxyprotocol/logging).
+- **Cache-Control** — `fileHandler` adds `no-cache` (`revalidateCache`) to the site's headers unless they already name Cache-Control (a site's own value, or `lockedHeaders` on a password site); only then is `immutableRoute(root)` added: the `zipgo_fingerprinted` matcher (`internal/fingerprint`, a registered Caddy matcher — `fingerprint.Is` is the pure, table-tested heuristic: a bundle dir in the path + an 8-char `[A-Za-z0-9_-]` token with a digit and a letter, or 16–64 lowercase hex, after `-`/`.` before the extension) **AND** a `file` matcher (the file exists — an SPA's index.html fallback for a stale hashed URL is never made immutable), and the headers handler `require`s status 2xx/304. Proxy, redirect and gone routes are untouched.
+- `perf_test.go` runs the generated localhost config in a real Caddy (`caddy.Run` on a free port) and checks the wire: sibling served, on-the-fly zstd, immutable/no-cache, 304, opt-outs. Extend it rather than only asserting JSON.
 
 ## Security defaults (`internal/builder`)
 

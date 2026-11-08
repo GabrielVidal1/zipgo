@@ -129,6 +129,12 @@ type Config struct {
 	// a path it has no page for. Only a static site lists (an SPA answers
 	// index.html for every path).
 	Browse *bool `json:"browse,omitempty"`
+	// Compress, when false, stops zipgo compressing this site's responses on
+	// the fly (Caddy's encode: zstd/gzip for text-like types). On by default;
+	// switch it off for an upstream that misbehaves behind a compressor.
+	// Pre-compressed siblings a deploy shipped (app.js.br) are still served —
+	// delete them, or deploy with --no-precompress, to stop those too.
+	Compress *bool `json:"compress,omitempty"`
 }
 
 // DefaultRedirectStatus is the status code used for a "redirect" site that does
@@ -273,6 +279,10 @@ func Locks(raw []byte) (map[string]json.RawMessage, []string, error) {
 // HTTPAllowed reports whether the site opts into being served over plain HTTP
 // (default false).
 func (c Config) HTTPAllowed() bool { return c.AllowHTTP != nil && *c.AllowHTTP }
+
+// Compressed reports whether the site's responses are compressed on the fly
+// (default true; "compress": false turns it off).
+func (c Config) Compressed() bool { return c.Compress == nil || *c.Compress }
 
 // InvalidHeaderName returns a human reason when name cannot be used as an HTTP
 // response header name, or "" when it is fine. A header name is a token
