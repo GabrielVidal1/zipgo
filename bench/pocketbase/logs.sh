@@ -4,10 +4,12 @@
 #   bench/pocketbase/logs.sh --api https://pb.bench.example.com --server user@host \
 #                            [--pb ~/services/bench-pocketbase] [--resolve IP] on|off|status
 #
-# PocketBase writes a row to auxiliary.db for every request it serves, so each
-# API read is also a SQLite write. "off" sets the log retention to 0 days,
-# which stops it persisting them; "on" puts the default (5 days) back.
-# "status" prints the retention and how many log rows there are.
+# PocketBase writes a row to auxiliary.db for every request it serves (in
+# batches of up to 200), so each API read is also a SQLite write. It logs a
+# request that succeeded at INFO and one that failed at ERROR, so "off" raises
+# the minimum level to WARN: successful requests stop being stored, errors are
+# still kept. "on" puts the defaults back (INFO, 5 days). "status" prints the
+# settings and how many log rows there are.
 set -euo pipefail
 
 api="" server="" pbdir="~/services/bench-pocketbase" resolve="" action=""
@@ -34,13 +36,13 @@ token=$("${curlx[@]}" -H 'Content-Type: application/json' \
   "$api/api/collections/_superusers/auth-with-password" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 
 case "$action" in
-  on) days=5 ;;
-  off) days=0 ;;
+  on) logs='{"maxDays": 5, "minLevel": 0}' ;;
+  off) logs='{"minLevel": 4}' ;;
 esac
 if [ "$action" != status ]; then
   "${curlx[@]}" -X PATCH -H "Authorization: $token" -H 'Content-Type: application/json' \
-    -d "{\"logs\": {\"maxDays\": $days}}" "$api/api/settings" >/dev/null
+    -d "{\"logs\": $logs}" "$api/api/settings" >/dev/null
 fi
-days=$("${curlx[@]}" -H "Authorization: $token" "$api/api/settings" | python3 -c 'import json,sys; print(json.load(sys.stdin)["logs"]["maxDays"])')
+cur=$("${curlx[@]}" -H "Authorization: $token" "$api/api/settings" | python3 -c 'import json,sys; l=json.load(sys.stdin)["logs"]; print("maxDays=%s minLevel=%s" % (l["maxDays"], l["minLevel"]))')
 rows=$("${curlx[@]}" -H "Authorization: $token" "$api/api/logs?perPage=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["totalItems"])')
-echo "request log: maxDays=$days, $rows rows"
+echo "request log: $cur, $rows rows"

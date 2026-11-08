@@ -72,8 +72,10 @@ assumes 3 minutes).
 ### PocketBase's request log
 
 PocketBase stores a log row for every request, so every API read is also a
-database write. `bench/pocketbase/logs.sh … off|on|status` switches the bench
-instance's log, to measure what that costs:
+database write (batched, up to 200 rows a transaction). It logs successes at
+INFO and failures at ERROR, so `bench/pocketbase/logs.sh … off` raises the
+bench instance's minimum level to WARN — no more row per successful request,
+errors still kept — and `on` puts the defaults back, to measure what it costs:
 
 ```bash
 bench/pocketbase/logs.sh --api https://pb.bench.example.com --server user@server \
