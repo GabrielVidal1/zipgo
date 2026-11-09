@@ -989,8 +989,10 @@ zipgo speaks HTTP/1.1 and HTTP/2 only. `ZIPGO_HTTP3=on|off` overrides it.
 
 **How many visitors can my box take?** [`bench/`](bench/README.md) is a load
 test for a zipgo host: it puts a copy of a real site and a throwaway
-PocketBase on it, steps the load up with k6 until it stops keeping up, and
-reports where each kind of traffic breaks and what ran out.
+PocketBase on it, steps the load up with k6 (and `bench/connload` for new
+TLS connections) until it stops keeping up, and reports where each kind of
+traffic breaks and what ran out — the load generator included: a step whose
+client was past 80 % CPU is marked client-bound.
 
 ## Docker
 

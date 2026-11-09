@@ -5,6 +5,7 @@
 #                [--resolve 192.168.1.131] [--ssh user@host] [--label baseline]
 #                [--scenarios static,firstvisit,handshake,api-read,api-write,mixed]
 #                [--step 30s] [--out bench/results] [--bench-key KEY] [--rates "5 10"]
+#                [--verify]
 #
 # Each scenario runs at a rising arrival rate (the ladders below), one k6 run
 # per step (Docker image grafana/k6, host network), and stops at the first step
@@ -12,14 +13,23 @@
 # even start (dropped: every VU stuck waiting on the server), or a p95 over the
 # scenario's budget. With --ssh, every step also samples the server: CPU
 # (busy / softirq), NIC throughput and TX-timeout counter, and per-container
-# CPU, memory and pids (docker stats, mid-step).
+# CPU, memory and pids (docker stats, mid-step). Every step also samples this
+# machine's CPU: past 80 % the load generator may be the limit, and the report
+# says so instead of blaming the server.
+#
+# The handshake scenario runs connload (bench/connload, built on first use),
+# not k6: k6 is too heavy a client to open new TLS connections as fast as a
+# server answers them. Clients don't verify the server's certificate chain
+# unless --verify — that check is client CPU (P-384 for Let's Encrypt's
+# intermediates, ~14 ms a connection on a laptop), not server work.
 #
 # Results: one JSON line per step in <out>/<label>-<stamp>/steps.jsonl, and a
 # Markdown report next to it (bench/report.py, which also compares runs).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-site="" api="" resolve="" ssh_host="" label="run" step="30s" out="$here/results" key="" rates=""
+. "$here/lib.sh"
+site="" api="" resolve="" ssh_host="" label="run" step="30s" out="$here/results" key="" rates="" verify=0
 scenarios="static,firstvisit,handshake,api-read,api-write,mixed"
 iface="${BENCH_IFACE:-eth0}"
 
@@ -35,7 +45,8 @@ while [ $# -gt 0 ]; do
     --out) out=$2; shift 2 ;;
     --bench-key) key=$2; shift 2 ;;
     --rates) rates=$2; shift 2 ;; # one ladder for every scenario (smoke tests)
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --verify) verify=1; shift ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -67,11 +78,13 @@ containers() {
 }
 
 {
-  echo "{\"label\": \"$label\", \"site\": \"$site\", \"api\": \"$api\", \"resolve\": \"$resolve\", \"step\": \"$step\", \"started\": \"$(date -Is)\"}"
+  echo "{\"label\": \"$label\", \"site\": \"$site\", \"api\": \"$api\", \"resolve\": \"$resolve\", \"step\": \"$step\", \"verify\": $([ $verify = 1 ] && echo true || echo false), \"started\": \"$(date -Is)\"}"
 } > "$dir/run.json"
 
 step_s=${step%s}
 IFS=, read -r -a list <<< "$scenarios"
+connload=""
+case ",$scenarios," in *,handshake,*) connload=$(connload_bin) ;; esac
 for sc in "${list[@]}"; do
   [ -n "${ladder[$sc]:-}" ] || { echo "unknown scenario $sc" >&2; exit 2; }
   case "$sc" in api-*|mixed) [ -n "$api" ] || { echo "skip $sc: no --api"; continue; } ;; esac
@@ -83,13 +96,23 @@ for sc in "${list[@]}"; do
       ( sleep $((step_s / 2)); containers > "$sdir/docker.jsonl" ) &
       sampler=$!
     fi
+    client_stat > "$sdir/client-before.txt"
     t0=$(date +%s.%N)
-    docker run --rm --network host -u "$(id -u):$(id -g)" \
-      -v "$here/k6:/scripts:ro" -v "$sdir:/out" \
-      -e SCENARIO="$sc" -e RATE="$rate" -e DURATION="$step" -e SITE="$site" -e API="$api" \
-      -e RESOLVE="$resolve" -e BENCH_KEY="$key" -e STATIC_PATH="${BENCH_STATIC_PATH:-/vite.svg}" \
-      grafana/k6:latest run -q --no-color /scripts/scenarios.js > "$sdir/k6.log" 2>&1 || true
+    if [ "$sc" = handshake ]; then
+      # Open loop: $rate new connections a second, at most 4000 at once.
+      "$connload" -url "${site%/}${BENCH_STATIC_PATH:-/vite.svg}" ${resolve:+-resolve "$resolve"} \
+        -rate "$rate" -c 4000 -d "$step" -json "$sdir/connload.json" $([ $verify = 1 ] && echo -verify) \
+        > "$sdir/connload.log" 2>&1 || true
+    else
+      docker run --rm --network host -u "$(id -u):$(id -g)" \
+        -v "$here/k6:/scripts:ro" -v "$sdir:/out" \
+        -e SCENARIO="$sc" -e RATE="$rate" -e DURATION="$step" -e SITE="$site" -e API="$api" \
+        -e RESOLVE="$resolve" -e BENCH_KEY="$key" -e STATIC_PATH="${BENCH_STATIC_PATH:-/vite.svg}" \
+        -e INSECURE="$((1 - verify))" \
+        grafana/k6:latest run -q --no-color /scripts/scenarios.js > "$sdir/k6.log" 2>&1 || true
+    fi
     t1=$(date +%s.%N)
+    client_stat > "$sdir/client-after.txt"
     [ -n "$ssh_host" ] && probe > "$sdir/after.txt"
     [ -n "${sampler:-}" ] && wait "$sampler" 2>/dev/null || true
     line=$(python3 -I "$here/report.py" step --dir "$sdir" --scenario "$sc" --rate "$rate" \

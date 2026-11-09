@@ -8,6 +8,11 @@
                    capacity of each scenario, and a comparison when several
                    runs are given (the first is the reference)
 
+A step run by connload (bench/connload — the handshake scenario and
+saturate.sh --new-conn) leaves connload.json instead of k6's summary.json.
+Each step also carries the load generator's own CPU (client-before/after.txt):
+past CLIENT_BOUND % the client may be what ran out, and the step says so.
+
 Standard library only.
 """
 import argparse
@@ -16,6 +21,7 @@ import os
 import sys
 
 SESSION_MINUTES = 3  # how long a visitor stays, to turn visitors/s into people at once
+CLIENT_BOUND = 80  # % CPU on the load generator past which a limit may be the client's
 
 
 def _num(x, default=0.0):
@@ -47,6 +53,35 @@ def k6_summary(path):
         "recv_rate": v("data_received", "rate"),
         "checks": v("checks", "rate", 1.0),
         "vus_max": v("vus_max", "value"),
+    }
+
+
+def connload_summary(path):
+    """connload.json in the shape of k6_summary: one iteration = one new
+    connection; its duration includes the TCP connect and the TLS handshake."""
+    with open(path) as f:
+        c = json.load(f)
+    done = _num(c.get("ok")) + _num(c.get("fail"))
+    secs = _num(c.get("seconds")) or 1.0
+    total = c.get("total_ms") or {}
+    return {
+        "iterations": done,
+        "iter_rate": done / secs,
+        "dropped": _num(c.get("dropped")),
+        "req_rate": done / secs,
+        "reqs": done,
+        "failed": _num(c.get("fail")) / done if done else 0.0,
+        "req_p50": _num(total.get("p50")),
+        "req_p95": _num(total.get("p95")),
+        "req_p99": _num(total.get("p99")),
+        "iter_p50": _num(total.get("p50")),
+        "iter_p95": _num(total.get("p95")),
+        "recv_rate": _num(c.get("bytes")) / secs,
+        "checks": _num(c.get("ok")) / done if done else 0.0,
+        "vus_max": 0.0,
+        "tls_p95": _num((c.get("tls_ms") or {}).get("p95")),
+        "client": "connload",
+        "errors": (c.get("errors") or [])[:3],
     }
 
 
@@ -111,15 +146,23 @@ def containers(path):
 
 def cmd_step(a):
     s = {"scenario": a.scenario, "rate": a.rate, "seconds": round(a.seconds, 1)}
-    summ = os.path.join(a.dir, "summary.json")
-    if not os.path.exists(summ):
-        s.update(ok=False, why="k6 wrote no summary (see k6.log)")
+    summ, cl = os.path.join(a.dir, "summary.json"), os.path.join(a.dir, "connload.json")
+    if os.path.exists(cl):
+        k = connload_summary(cl)
+    elif os.path.exists(summ):
+        k = k6_summary(summ)
+    else:
+        s.update(ok=False, why="the client wrote no summary (see k6.log / connload.log)")
         print(json.dumps(s))
         return
-    k = k6_summary(summ)
     s.update(k)
     s.update(server_delta(read_probe(os.path.join(a.dir, "before.txt")),
                           read_probe(os.path.join(a.dir, "after.txt")), a.seconds))
+    client = server_delta(read_probe(os.path.join(a.dir, "client-before.txt")),
+                          read_probe(os.path.join(a.dir, "client-after.txt")), a.seconds)
+    if client:
+        s["client_cpu"] = client["cpu_busy"]
+        s["client_bound"] = client["cpu_busy"] >= CLIENT_BOUND
     cs = containers(os.path.join(a.dir, "docker.jsonl"))
     s["containers"] = cs[:6]
     zipgo = [c for c in cs if "zipgo" in c["name"]]
@@ -141,6 +184,8 @@ def cmd_step(a):
         why.append(f"p95 {p95:.0f} ms > {a.budget} ms")
     if s.get("tx_timeouts"):
         why.append(f"NIC TX timeout ×{s['tx_timeouts']}")
+    if why and s.get("client_bound"):
+        why.append(f"client CPU {s['client_cpu']:.0f} % — the load generator may be the limit, not the server")
     s["ok"] = not why
     s["why"] = ", ".join(why)
     print(json.dumps(s))
@@ -157,7 +202,14 @@ def fmt_line(s):
             f"  in {s['recv_rate'] * 8 / 1e6:6.1f} Mbit/s"
             + (f"  cpu {s['cpu_busy']:3.0f}% (sirq {s['cpu_softirq']:2.0f}%)" if "cpu_busy" in s else "")
             + (f"  [{topc}]" if topc else "")
+            + client_note(s)
             + (f"  — {s['why']}" if s["why"] else ""))
+
+
+def client_note(s):
+    if "client_cpu" not in s:
+        return ""
+    return f"  client {s['client_cpu']:3.0f}%" + (" ⚠ client-bound" if s.get("client_bound") else "")
 
 
 def cmd_line(a):
@@ -170,7 +222,13 @@ def fmt_sat(s):
     top = ", ".join(f"{c['name']} {c['cpu']:.0f}" for c in (s.get("containers") or [])[:3])
     return (f"  {s['scenario']} ×{s['rate']:>4}: {s['req_rate']:8.0f} req/s  p50 {s['req_p50']:6.1f}"
             f" p95 {s['req_p95']:7.1f} ms  fail {s['failed'] * 100:4.1f}%"
-            f"  cpu {s.get('cpu_busy', 0):3.0f}% sirq {s.get('cpu_softirq', 0):2.0f}%  {top}")
+            f"  cpu {s.get('cpu_busy', 0):3.0f}% sirq {s.get('cpu_softirq', 0):2.0f}%  {top}" + client_note(s))
+
+
+def client_cell(s):
+    if "client_cpu" not in s:
+        return ""
+    return f"{s['client_cpu']:.0f}%" + (" ⚠" if s.get("client_bound") else "")
 
 
 def cmd_satline(a):
@@ -245,28 +303,34 @@ def cmd_report(a):
         if sat:
             w("\n**Ceiling** — N clients in a closed loop on one small file (each sends its next "
               "request as soon as the last is answered):\n")
-            w("| connections | clients | req/s | p50 ms | p95 ms | fail | CPU | softirq | top containers (CPU %) |")
-            w("|---|---|---|---|---|---|---|---|---|")
+            w("| connections | clients | req/s | p50 ms | p95 ms | fail | CPU | softirq | top containers (CPU %) | client CPU |")
+            w("|---|---|---|---|---|---|---|---|---|---|")
             for x in sat:
                 if "req_rate" not in x:
                     continue
                 top = ", ".join(f"{c['name']} {c['cpu']:.0f}" for c in (x.get("containers") or [])[:3])
                 kind = "new per request" if x["scenario"].endswith("handshake") else "kept alive"
                 w(f"| {kind} | {x['rate']} | **{x['req_rate']:.0f}** | {x['req_p50']:.1f} | {x['req_p95']:.0f} | "
-                  f"{x['failed'] * 100:.1f}% | {x.get('cpu_busy', 0):.0f}% | {x.get('cpu_softirq', 0):.0f}% | {top} |")
+                  f"{x['failed'] * 100:.1f}% | {x.get('cpu_busy', 0):.0f}% | {x.get('cpu_softirq', 0):.0f}% | {top} | "
+                  f"{client_cell(x)} |")
         w("\n<details><summary>Every step</summary>\n")
-        w("| scenario | rate | done/s | p50 ms | p95 ms | fail | dropped | in Mbit/s | CPU | softirq | NIC tx Mbit/s | top containers (CPU %) | zipgo pids |")
-        w("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        w("| scenario | rate | done/s | p50 ms | p95 ms | fail | dropped | in Mbit/s | CPU | softirq | NIC tx Mbit/s | top containers (CPU %) | zipgo pids | client CPU |")
+        w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for s in steps:
             if "iterations" not in s:
-                w(f"| {s['scenario']} | {s['rate']} | ✗ {s.get('why', '')} |||||||||||")
+                w(f"| {s['scenario']} | {s['rate']} | ✗ {s.get('why', '')} ||||||||||||")
                 continue
             top = ", ".join(f"{c['name']} {c['cpu']:.0f}" for c in (s.get("containers") or [])[:3])
             w(f"| {s['scenario']} | {s['rate']} | {s['iter_rate']:.1f} | {s['req_p50']:.1f} | {s['p95']:.0f} | "
               f"{s['failed'] * 100:.1f}% | {s.get('dropped_ratio', 0) * 100:.0f}% | {s['recv_rate'] * 8 / 1e6:.0f} | "
               f"{s.get('cpu_busy', 0):.0f}% | {s.get('cpu_softirq', 0):.0f}% | {s.get('nic_tx_mbit', 0):.0f} | "
-              f"{top} | {s.get('zipgo_pids', '')} |")
+              f"{top} | {s.get('zipgo_pids', '')} | {client_cell(s)} |")
         w("\n</details>\n")
+        bound = [x for x in steps + sat if x.get("client_bound")]
+        if bound:
+            w(f"⚠ **{len(bound)} step(s) client-bound**: the load generator's own CPU was past "
+              f"{CLIENT_BOUND} %, so those numbers may measure the client, not the server. A k6 client "
+              f"verifying certificates is the usual cause (run without --verify), or the machine is too small.\n")
     if len(runs) > 1:
         w("## Comparison\n")
         labels = [m.get("label", os.path.basename(d)) for d, m, _ in runs]

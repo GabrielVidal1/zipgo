@@ -5,8 +5,10 @@ load up with [k6](https://k6.io) until the server stops keeping up, and says
 for each kind of traffic where it broke and what ran out (CPU, network, a
 container, PocketBase).
 
-Nothing to install but Docker (k6 runs from the `grafana/k6` image) and
-Python 3 for the report. The server needs SSH for the samples.
+Nothing to install but Docker (k6 runs from the `grafana/k6` image; the
+new-connection client, `bench/connload`, is built with the local Go or in the
+`golang` image on first use) and Python 3 for the report. The server needs
+SSH for the samples.
 
 ## 1. A target that isn't a real site
 
@@ -38,7 +40,7 @@ itself, without the uplink in the way). Leave it out to go through DNS.
 |---|---|---|
 | `static` | one request for a small file, connections kept alive | routing + file serving, raw req/s |
 | `firstvisit` | a new visitor: the page + every asset it links, on a new connection | bytes: NIC, uplink, compression |
-| `handshake` | one request on a brand-new TLS connection | TLS handshakes (and a proxy in front) |
+| `handshake` | one request on a brand-new TLS connection (connload, not k6) | TLS handshakes (and a proxy in front) |
 | `api-read` | a PocketBase list request through zipgo | reverse proxy + PocketBase + SQLite |
 | `api-write` | a PocketBase create | SQLite's single writer |
 | `mixed` | a visitor: the page, then 3 API reads a second apart | the headline "visitors per second" |
@@ -53,7 +55,39 @@ Server throughput is averaged over the k6 container's whole run, so it reads
 a few percent low.
 
 `--scenarios static,firstvisit` picks some, `--rates "5 10"` replaces every
-ladder (smoke tests), `--step 60s` lengthens the steps.
+ladder (smoke tests), `--step 60s` lengthens the steps, `--verify` makes the
+clients check the server's certificate (off by default — see below).
+
+### Don't measure the client
+
+A load generator runs out too, and when it does its limit reads like the
+server's. Two rules came out of that (raspy2, 2026-11-09: a "340 new
+connections/s at 40 % CPU" ceiling that was really ~1,400/s at 99 %):
+
+- **Certificates aren't verified by default.** Checking the chain is client
+  work the server never sees, and it is expensive: Let's Encrypt's
+  intermediates carry P-384 keys, which Go (k6, connload) verifies in generic
+  code — ~14 ms of CPU per connection on a 4-core laptop CPU, so a few hundred
+  new connections a second fill the client. Real visitors verify on their own
+  devices. `--verify` turns it back on (to check a certificate, not capacity).
+- **New connections come from connload** (`bench/connload`, a few hundred
+  lines of Go), not k6: even without verification k6 tops out around 770 new
+  TLS connections/s on that laptop, connload passes 2,000/s at ~80 % of it.
+  `saturate.sh --new-conn --k6` still runs k6, for comparison.
+
+Every step also samples **this machine's CPU**. The console line and the
+report show it (`client 71%`), and past 80 % a step is marked
+**⚠ client-bound**: read those numbers as a floor, not the server's limit.
+
+connload also runs on its own, with two switches a server can't tell from
+real visitors:
+
+```bash
+go run ./bench/connload -url https://bench.example.com/vite.svg -resolve 192.168.1.131 -c 256 -d 20s
+#   -resume   resume TLS sessions, like a returning visitor (raspy2: +13 %)
+#   -x25519   offer X25519 only, not the post-quantum hybrid browsers send (+15 %)
+#   -rate N   open loop: N arrivals/s instead of a closed loop of -c connections
+```
 
 Run `api-write` **last**, and start each run on a fresh PocketBase: every
 write adds a row, and PocketBase counts the whole collection on every list
@@ -68,12 +102,18 @@ few slow connects while the server is far from busy — read the CPU column.
 For the most the server can answer, `bench/saturate.sh` runs N clients in a
 closed loop (each sends its next request as soon as the last is answered) on
 one small file, with connections kept alive or `--new-conn` (a TLS handshake
-per request), and adds a *Ceiling* table to that run's report:
+per request, from connload), and adds a *Ceiling* table to that run's
+report:
 
 ```bash
 bench/saturate.sh --into bench/results/<run> --url https://bench.example.com/vite.svg \
     --resolve 192.168.1.131 --ssh user@server --vus "16 64 256" [--new-conn]
 ```
+
+To see what a proxy in front costs, run the same `--new-conn` ceiling
+through it and straight to the server (a second container on a published
+port): on raspy2, Traefik's TCP passthrough with PROXY v2 took a third of the
+CPU per new connection (1,400/s through it, 2,100/s without).
 
 ## 3. Read
 
