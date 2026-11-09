@@ -164,6 +164,19 @@ def cmd_line(a):
     print(fmt_line(json.loads(a.json)), flush=True)
 
 
+def fmt_sat(s):
+    if "req_rate" not in s:
+        return f"  {s['scenario']} ×{s['rate']}: ✗ {s.get('why', '')}"
+    top = ", ".join(f"{c['name']} {c['cpu']:.0f}" for c in (s.get("containers") or [])[:3])
+    return (f"  {s['scenario']} ×{s['rate']:>4}: {s['req_rate']:8.0f} req/s  p50 {s['req_p50']:6.1f}"
+            f" p95 {s['req_p95']:7.1f} ms  fail {s['failed'] * 100:4.1f}%"
+            f"  cpu {s.get('cpu_busy', 0):3.0f}% sirq {s.get('cpu_softirq', 0):2.0f}%  {top}")
+
+
+def cmd_satline(a):
+    print(fmt_sat(json.loads(a.json)), flush=True)
+
+
 UNIT = {"static": "req/s", "handshake": "new conns/s", "firstvisit": "visitors/s",
         "api-read": "req/s", "api-write": "writes/s", "mixed": "visitors/s"}
 ORDER = ["static", "handshake", "firstvisit", "api-read", "api-write", "mixed"]
@@ -224,6 +237,23 @@ def cmd_report(a):
             w(f"\nMixed visitors sustained: {mixed['rate']}/s — with {SESSION_MINUTES}-minute "
               f"visits that is about **{people:,} people on the sites at once** "
               f"(arrival rate × visit length).\n")
+        sat = []
+        try:
+            sat = [json.loads(l) for l in open(os.path.join(d, "sat.jsonl")) if l.strip()]
+        except OSError:
+            pass
+        if sat:
+            w("\n**Ceiling** — N clients in a closed loop on one small file (each sends its next "
+              "request as soon as the last is answered):\n")
+            w("| connections | clients | req/s | p50 ms | p95 ms | fail | CPU | softirq | top containers (CPU %) |")
+            w("|---|---|---|---|---|---|---|---|---|")
+            for x in sat:
+                if "req_rate" not in x:
+                    continue
+                top = ", ".join(f"{c['name']} {c['cpu']:.0f}" for c in (x.get("containers") or [])[:3])
+                kind = "new per request" if x["scenario"].endswith("handshake") else "kept alive"
+                w(f"| {kind} | {x['rate']} | **{x['req_rate']:.0f}** | {x['req_p50']:.1f} | {x['req_p95']:.0f} | "
+                  f"{x['failed'] * 100:.1f}% | {x.get('cpu_busy', 0):.0f}% | {x.get('cpu_softirq', 0):.0f}% | {top} |")
         w("\n<details><summary>Every step</summary>\n")
         w("| scenario | rate | done/s | p50 ms | p95 ms | fail | dropped | in Mbit/s | CPU | softirq | NIC tx Mbit/s | top containers (CPU %) | zipgo pids |")
         w("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
@@ -283,10 +313,12 @@ def main():
     s.add_argument("--step-seconds", type=float, default=None)
     l = sub.add_parser("line")
     l.add_argument("--json", required=True)
+    sl = sub.add_parser("satline")
+    sl.add_argument("--json", required=True)
     r = sub.add_parser("report")
     r.add_argument("dirs", nargs="+")
     a = p.parse_args()
-    {"step": cmd_step, "line": cmd_line, "report": cmd_report}[a.cmd](a)
+    {"step": cmd_step, "line": cmd_line, "satline": cmd_satline, "report": cmd_report}[a.cmd](a)
 
 
 if __name__ == "__main__":

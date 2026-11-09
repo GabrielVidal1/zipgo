@@ -38,6 +38,17 @@ func TestHTTP3(t *testing.T) {
 	}
 }
 
+// The on-the-fly encoder must stay one whose memory doesn't grow with the
+// number of responses in flight (see encodeHandler): zstd's 1.7 MB per
+// response got zipgo OOM-killed under load.
+func TestEncodeHandlerIsStatelessGzip(t *testing.T) {
+	h := encodeHandler()
+	enc := h["encodings"].(obj)
+	if len(enc) != 1 || enc["gzip"].(obj)["level"] != gzipStateless {
+		t.Fatalf("encodings = %v, want only stateless gzip", enc)
+	}
+}
+
 func TestBuildConfigProtocols(t *testing.T) {
 	protocols := func() any {
 		cfg, err := BuildConfig(nil, "", "")
@@ -164,9 +175,10 @@ func TestServingCompressionAndCache(t *testing.T) {
 	if string(plain) != js {
 		t.Fatal("gzip-only client: decoded body differs from the file")
 	}
-	// No sibling: compressed on the fly, zstd preferred.
+	// No sibling: gzip on the fly (stateless: see encodeHandler), even for a
+	// client that would take zstd.
 	res = get("/example.com/assets/vendor-Ab12Cd34.js", "gzip, zstd")
-	if res.Header.Get("Content-Encoding") != "zstd" || !strings.Contains(res.Header.Get("Vary"), "Accept-Encoding") {
+	if res.Header.Get("Content-Encoding") != "gzip" || !strings.Contains(res.Header.Get("Vary"), "Accept-Encoding") {
 		t.Fatalf("on-the-fly: encoding %q vary %q", res.Header.Get("Content-Encoding"), res.Header.Get("Vary"))
 	}
 	if cc := res.Header.Get("Cache-Control"); cc != immutableCache {

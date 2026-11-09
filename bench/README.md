@@ -55,6 +55,26 @@ a few percent low.
 `--scenarios static,firstvisit` picks some, `--rates "5 10"` replaces every
 ladder (smoke tests), `--step 60s` lengthens the steps.
 
+Run `api-write` **last**, and start each run on a fresh PocketBase: every
+write adds a row, and PocketBase counts the whole collection on every list
+request, so a run after 50,000 writes measures a bigger database, not a
+faster or slower server (`setup.sh --pb` on an empty folder seeds 1,000 rows).
+
+### The ceiling
+
+The ladder measures what a rate of *arrivals* costs, the way visitors come.
+Its first step opens a burst of connections at once, so a step can fail on a
+few slow connects while the server is far from busy — read the CPU column.
+For the most the server can answer, `bench/saturate.sh` runs N clients in a
+closed loop (each sends its next request as soon as the last is answered) on
+one small file, with connections kept alive or `--new-conn` (a TLS handshake
+per request), and adds a *Ceiling* table to that run's report:
+
+```bash
+bench/saturate.sh --into bench/results/<run> --url https://bench.example.com/vite.svg \
+    --resolve 192.168.1.131 --ssh user@server --vus "16 64 256" [--new-conn]
+```
+
 ## 3. Read
 
 `bench/results/<label>-<stamp>/report.md`: the sustained rate per scenario
