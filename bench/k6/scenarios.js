@@ -13,6 +13,8 @@
 //   STATIC_PATH     the small file of the "static" scenario (default /vite.svg)
 //   BENCH_KEY       the X-Bench-Key header api-write sends
 //   ACCEPT_ENCODING what the client accepts (default: what Chrome sends)
+//   INSECURE        1 = don't verify the server's certificate chain (run.sh's
+//                   default: client CPU, not server work — see README)
 //   SUMMARY         where to write the JSON summary (default /out/summary.json)
 import http from 'k6/http';
 import { check, sleep } from 'k6';
@@ -52,6 +54,7 @@ const preVUs = Math.max(5, Math.ceil(RATE * busy));
 export const options = {
   hosts,
   discardResponseBodies: true,
+  insecureSkipTLSVerify: __ENV.INSECURE === '1',
   // A first visit is a new visitor: a new connection (and TLS handshake) per
   // iteration, reused within it like a browser does.
   noVUConnectionReuse: SCENARIO === 'firstvisit' || SCENARIO === 'mixed',

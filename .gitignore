@@ -7,4 +7,5 @@ vince
 
 .env
 bench/results/
+bench/.bin/
 __pycache__/

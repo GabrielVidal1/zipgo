@@ -5,7 +5,8 @@
 //
 // Env: URL (the file to fetch), VUS (concurrent clients), DURATION, RESOLVE
 // (an IP the URL's host resolves to), NEW_CONN=1 (a new TLS connection per
-// request: the handshake ceiling), ACCEPT_ENCODING, SUMMARY.
+// request — saturate.sh uses connload for that unless --k6), INSECURE=1 (don't
+// verify the certificate chain), ACCEPT_ENCODING, SUMMARY.
 import http from 'k6/http';
 import { check } from 'k6';
 
@@ -17,6 +18,7 @@ if (__ENV.RESOLVE && m) hosts[m[1]] = __ENV.RESOLVE;
 export const options = {
   hosts,
   discardResponseBodies: true,
+  insecureSkipTLSVerify: __ENV.INSECURE === '1',
   noConnectionReuse: __ENV.NEW_CONN === '1',
   summaryTrendStats: ['avg', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
   scenarios: {
