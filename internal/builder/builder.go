@@ -26,8 +26,7 @@ import (
 	// config in real Caddy to prove it):
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/encode"        // http.handlers.encode (encodeHandler)
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/encode/brotli" // http.precompressed.br (precompressed)
-	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/encode/gzip"   // http.encoders.gzip + http.precompressed.gzip
-	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/encode/zstd"   // http.encoders.zstd (encodeHandler)
+	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/encode/gzip"   // http.encoders.gzip + http.precompressed.gzip (encodeHandler)
 	_ "github.com/caddyserver/caddy/v2/modules/caddyhttp/proxyprotocol" // caddy.listeners.proxy_protocol (withProxyProtocol)
 	_ "github.com/caddyserver/caddy/v2/modules/logging"                 // caddy.logging.encoders.filter (accessLogging)
 )
@@ -748,21 +747,35 @@ func withEncode(s sites.Site, h obj) arr {
 	return arr{encodeHandler(), h}
 }
 
-// encodeHandler compresses a response on the fly — zstd, else gzip, whichever
-// the client accepts — when nothing else did: a file the deploy shipped a
-// pre-compressed sibling for goes out as that sibling (Content-Encoding is then
-// already set and the encoder steps aside), so this is the fallback for files
-// deployed without one and for a proxied upstream's JSON. Caddy only compresses
-// text-like types (HTML, CSS, JS, JSON, SVG, wasm…), never an event stream, and
-// skips bodies under minimum_length, where the frame costs more than it saves.
+// encodeHandler compresses a response on the fly when nothing else did: a file
+// the deploy shipped a pre-compressed sibling for goes out as that sibling
+// (Content-Encoding is then already set and the encoder steps aside), so this
+// is the fallback for files deployed without one and for a proxied upstream's
+// JSON. Caddy only compresses text-like types (HTML, CSS, JS, JSON, SVG,
+// wasm…), never an event stream, and skips bodies under minimum_length, where
+// the frame costs more than it saves.
+//
+// It is gzip in its stateless mode (gzipStateless), on purpose. An encoder
+// lives as long as the response it writes, so a server holding N responses
+// holds N encoders, and an overloaded upstream makes N large: requests queue
+// in zipgo while it waits. Measured per in-flight response: zstd at Caddy's
+// default level 1.7 MB, gzip level 5 0.7 MB, stateless gzip 1 KB. On raspy2
+// (512 MiB cap) zstd got zipgo OOM-killed twice when a PocketBase was pushed
+// past its capacity — every site on the box down for a few seconds. Stateless
+// gzip compresses a bundle ~15 % less well than gzip -5 (2.4x vs 2.8x on a
+// 1 MB Vite bundle, 14.7x vs 16.4x on PocketBase JSON); the bundles a deploy
+// ships get their brotli sibling anyway.
 func encodeHandler() obj {
 	return obj{
 		"handler":        "encode",
-		"encodings":      obj{"zstd": obj{}, "gzip": obj{}},
-		"prefer":         arr{"zstd", "gzip"},
+		"encodings":      obj{"gzip": obj{"level": gzipStateless}},
 		"minimum_length": 1024,
 	}
 }
+
+// gzipStateless is klauspost/compress's gzip.StatelessCompression level:
+// every write is compressed on its own, with no state kept between writes.
+const gzipStateless = -3
 
 // precompressed makes a file_server answer a request for app.js with
 // app.js.br or app.js.gz when the client accepts that encoding and the sibling

@@ -960,8 +960,10 @@ brotli's best level on the machine that deploys, instead of on the server for
 every request. The copies are made in a temporary folder, never in your build
 directory, and the `--delete` mirror removes them along with their file.
 `--no-precompress` turns it off for a deploy. Anything without a copy — a site
-uploaded another way, a proxied API's JSON — is compressed on the fly (zstd or
-gzip, text types, bodies of 1 KiB and up). A site whose upstream misbehaves
+uploaded another way, a proxied API's JSON — is gzipped on the fly (text
+types, bodies of 1 KiB and up), in gzip's stateless mode: each in-flight
+response costs ~1 KB instead of the 0.7–1.7 MB of gzip -5 or zstd, so a burst
+of slow requests can't run the server out of memory. A site whose upstream misbehaves
 behind a compressor sets `"compress": false` in its `.zipgoconfig.json`.
 
 **Caching that is right after a deploy.** A file whose name carries a bundler's
@@ -973,8 +975,10 @@ and never ask again, since a new build gives it a new name. Every other file,
 `index.html` first, gets `Cache-Control: no-cache`: the browser asks each time
 and gets a bodiless 304 when nothing changed, so a deploy is visible at once
 instead of after whatever lifetime a browser guesses for a response with no
-caching header. The hash test errs on the safe side (a hashed file it misses
-just costs a 304). A site that sets its own `Cache-Control` in `headers` keeps
+caching header. The hash test errs on the safe side: the 8-character form
+needs a digit, so a Vite hash made only of letters (`index-qt-eYfda.js`,
+about one in five) is revalidated like any file — a 304, where a word taken
+for a hash (`inter-semibold.woff2`) would be stuck in browsers for a year. A site that sets its own `Cache-Control` in `headers` keeps
 it on every file, and a password-protected site keeps `private, no-cache`.
 
 **No HTTP/3 behind a TCP proxy.** HTTP/3 runs over UDP, which a TCP passthrough
